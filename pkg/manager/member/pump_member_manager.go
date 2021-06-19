@@ -67,9 +67,11 @@ func (m *pumpMemberManager) Sync(tc *v1alpha1.TidbCluster) error {
 	if tc.Spec.Pump == nil {
 		return nil
 	}
+	// 协调 Service
 	if err := m.syncHeadlessService(tc); err != nil {
 		return err
 	}
+	// 协调 StatefulSet
 	return m.syncPumpStatefulSetForTidbCluster(tc)
 }
 
@@ -82,6 +84,7 @@ func (m *pumpMemberManager) syncPumpStatefulSetForTidbCluster(tc *v1alpha1.TidbC
 	notFound := errors.IsNotFound(err)
 	oldSet := oldPumpSetTemp.DeepCopy()
 
+	// 更新 status
 	if err := m.syncTiDBClusterStatus(tc, oldSet); err != nil {
 		klog.Errorf("failed to sync TidbCluster: [%s/%s]'s status, error: %v", tc.Namespace, tc.Name, err)
 		return err
@@ -92,16 +95,19 @@ func (m *pumpMemberManager) syncPumpStatefulSetForTidbCluster(tc *v1alpha1.TidbC
 		return nil
 	}
 
+	// 协调 ConfigMap
 	cm, err := m.syncConfigMap(tc, oldSet)
 	if err != nil {
 		return err
 	}
 
+	// 拼接 StatefulSet
 	newSet, err := getNewPumpStatefulSet(tc, cm)
 	if err != nil {
 		return err
 	}
 	if notFound {
+		// 创建 StatefulSet
 		err = SetStatefulSetLastAppliedConfigAnnotation(newSet)
 		if err != nil {
 			return err
@@ -109,10 +115,12 @@ func (m *pumpMemberManager) syncPumpStatefulSetForTidbCluster(tc *v1alpha1.TidbC
 		return m.deps.StatefulSetControl.CreateStatefulSet(tc, newSet)
 	}
 
+	// 业务缩扩容处理
 	if err := m.scaler.Scale(tc, oldSet, newSet); err != nil {
 		return err
 	}
 
+	// 优先其他组件升级
 	// Wait for PD & TiKV upgrading done
 	if tc.Status.TiCDC.Phase == v1alpha1.UpgradePhase ||
 		tc.Status.TiFlash.Phase == v1alpha1.UpgradePhase ||
@@ -125,6 +133,7 @@ func (m *pumpMemberManager) syncPumpStatefulSetForTidbCluster(tc *v1alpha1.TidbC
 		return nil
 	}
 
+	// 协调 StatefulSet
 	return UpdateStatefulSet(m.deps.StatefulSetControl, tc, newSet, oldSet)
 }
 

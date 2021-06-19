@@ -96,6 +96,7 @@ func (m *tikvMemberManager) Sync(tc *v1alpha1.TidbCluster) error {
 		return controller.RequeueErrorf("TidbCluster: [%s/%s], waiting for PD cluster running", ns, tcName)
 	}
 
+	// 协调 Service
 	svcList := []SvcConfig{
 		{
 			Name:       "peer",
@@ -110,6 +111,8 @@ func (m *tikvMemberManager) Sync(tc *v1alpha1.TidbCluster) error {
 			return err
 		}
 	}
+
+	// 协调 StatefulSet
 	return m.syncStatefulSetForTidbCluster(tc)
 }
 
@@ -169,6 +172,7 @@ func (m *tikvMemberManager) syncStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 
 	oldSet := oldSetTmp.DeepCopy()
 
+	// 更新 status
 	if err := m.syncTidbClusterStatus(tc, oldSet); err != nil {
 		return err
 	}
@@ -178,11 +182,13 @@ func (m *tikvMemberManager) syncStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		return nil
 	}
 
+	// 协调 Configmap
 	cm, err := m.syncTiKVConfigMap(tc, oldSet)
 	if err != nil {
 		return err
 	}
 
+	// 恢复 failed store
 	// Recover failed stores if any before generating desired statefulset
 	if len(tc.Status.TiKV.FailureStores) > 0 {
 		m.failover.RemoveUndesiredFailures(tc)
@@ -193,11 +199,14 @@ func (m *tikvMemberManager) syncStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		m.failover.Recover(tc)
 	}
 
+	// 拼接 StatefulSet
 	newSet, err := getNewTiKVSetForTidbCluster(tc, cm)
 	if err != nil {
 		return err
 	}
+
 	if setNotExist {
+		// 创建 StatefulSet
 		err = SetStatefulSetLastAppliedConfigAnnotation(newSet)
 		if err != nil {
 			return err
@@ -210,6 +219,7 @@ func (m *tikvMemberManager) syncStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		return nil
 	}
 
+	// 传递 Store Label 到 TiKV
 	if _, err := m.setStoreLabelsForTiKV(tc); err != nil {
 		return err
 	}
@@ -223,6 +233,7 @@ func (m *tikvMemberManager) syncStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		return err
 	}
 
+	// 自动恢复
 	// Perform failover logic if necessary. Note that this will only update
 	// TidbCluster status. The actual scaling performs in next sync loop (if a
 	// new replica needs to be added).
@@ -234,12 +245,14 @@ func (m *tikvMemberManager) syncStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		}
 	}
 
+	// 业务上升级处理
 	if !templateEqual(newSet, oldSet) || tc.Status.TiKV.Phase == v1alpha1.UpgradePhase {
 		if err := m.upgrader.Upgrade(tc, oldSet, newSet); err != nil {
 			return err
 		}
 	}
 
+	// 协调 StatefulSet
 	return UpdateStatefulSet(m.deps.StatefulSetControl, tc, newSet, oldSet)
 }
 

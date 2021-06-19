@@ -81,32 +81,38 @@ func (m *tidbMemberManager) Sync(tc *v1alpha1.TidbCluster) error {
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 先等待 TiKV 可用
 	if tc.Spec.TiKV != nil && !tc.TiKVIsAvailable() {
 		return controller.RequeueErrorf("TidbCluster: [%s/%s], waiting for TiKV cluster running", ns, tcName)
 	}
 
+	// 等待 Pump 可用
 	if tc.Spec.Pump != nil {
 		if !tc.PumpIsAvailable() {
 			return controller.RequeueErrorf("TidbCluster: [%s/%s], waiting for Pump cluster running", ns, tcName)
 		}
 	}
 
+	// 协调 Handless Service
 	// Sync TiDB Headless Service
 	if err := m.syncTiDBHeadlessServiceForTidbCluster(tc); err != nil {
 		return err
 	}
 
+	// 协调 Service
 	// Sync TiDB Service before syncing TiDB StatefulSet
 	if err := m.syncTiDBService(tc); err != nil {
 		return err
 	}
 
+	// TLS 开启，检查证书是否存在
 	if tc.Spec.TiDB.IsTLSClientEnabled() {
 		if err := m.checkTLSClientCert(tc); err != nil {
 			return err
 		}
 	}
 
+	// 协调 StatefulSet
 	// Sync TiDB StatefulSet
 	return m.syncTiDBStatefulSetForTidbCluster(tc)
 }

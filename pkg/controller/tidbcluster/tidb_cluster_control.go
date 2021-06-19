@@ -96,7 +96,10 @@ type defaultTidbClusterControl struct {
 
 // UpdateStatefulSet executes the core logic loop for a tidbcluster.
 func (c *defaultTidbClusterControl) UpdateTidbCluster(tc *v1alpha1.TidbCluster) error {
+	// 添加 TC 相关默认参数
 	c.defaulting(tc)
+
+	// 检查 TC 参数
 	if !c.validate(tc) {
 		return nil // fatal error, no need to retry on invalid object
 	}
@@ -104,17 +107,26 @@ func (c *defaultTidbClusterControl) UpdateTidbCluster(tc *v1alpha1.TidbCluster) 
 	var errs []error
 	oldStatus := tc.Status.DeepCopy()
 
+	// 下面步骤都会执行，err 会被聚合
+
+	// ** 进行所有组件的 Sync **
+	// 这里会经过所有的 MemberManager 进行处理，包括 Sync + Update status
 	if err := c.updateTidbCluster(tc); err != nil {
 		errs = append(errs, err)
 	}
 
+	// 根据更新后的 status 更新 TC 的 condition
 	if err := c.conditionUpdater.Update(tc); err != nil {
 		errs = append(errs, err)
 	}
 
+	// 对比前后 status，没有变化则返回
 	if apiequality.Semantic.DeepEqual(&tc.Status, oldStatus) {
 		return errorutils.NewAggregate(errs)
 	}
+
+	// status 有发生变化，那么更新 Kubernetes 中的 TiDBCluster 变化
+	// NOTE: spec 已经是更新的，因为只有 spec 更新才会引起 sync
 	if _, err := c.tcControl.UpdateTidbCluster(tc.DeepCopy(), &tc.Status, oldStatus); err != nil {
 		errs = append(errs, err)
 	}
@@ -138,12 +150,16 @@ func (c *defaultTidbClusterControl) defaulting(tc *v1alpha1.TidbCluster) {
 }
 
 func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) error {
+	// 更新 Metric
 	c.recordMetrics(tc)
+
+	// 协调处理 PV
 	// syncing all PVs managed by operator's reclaim policy to Retain
 	if err := c.reclaimPolicyManager.Sync(tc); err != nil {
 		return err
 	}
 
+	// 清理 orphan Pod
 	// cleaning all orphan pods(pd, tikv or tiflash which don't have a related PVC) managed by operator
 	// this could be useful when failover run into an undesired situation as described in PD failover function
 	skipReasons, err := c.orphanPodsCleaner.Clean(tc)
@@ -156,11 +172,13 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		}
 	}
 
+	// 协调处理 Discovery
 	// reconcile TiDB discovery service
 	if err := c.discoveryManager.Reconcile(tc); err != nil {
 		return err
 	}
 
+	// 协调处理 TiCDC
 	//   - waiting for the pd cluster available(pd cluster is in quorum)
 	//   - create or update ticdc deployment
 	//   - sync ticdc cluster status from pd to TidbCluster object
@@ -168,6 +186,7 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		return err
 	}
 
+	// 协调处理 TiFlash
 	// works that should be done to make the tiflash cluster current state match the desired state:
 	//   - waiting for the tidb cluster available
 	//   - create or update tiflash headless service
@@ -181,6 +200,7 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		return err
 	}
 
+	// 协调处理 PD
 	// works that should be done to make the pd cluster current state match the desired state:
 	//   - create or update the pd service
 	//   - create or update the pd headless service
@@ -196,6 +216,7 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		return err
 	}
 
+	// 协调处理 TiKV
 	// works that should be done to make the tikv cluster current state match the desired state:
 	//   - waiting for the pd cluster available(pd cluster is in quorum)
 	//   - create or update tikv headless service
@@ -209,11 +230,13 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		return err
 	}
 
+	// 协调处理 Pump
 	// syncing the pump cluster
 	if err := c.pumpMemberManager.Sync(tc); err != nil {
 		return err
 	}
 
+	// 协调处理 TiDB
 	// works that should be done to make the tidb cluster current state match the desired state:
 	//   - waiting for the tikv cluster available(at least one peer works)
 	//   - create or update tidb headless service
@@ -226,6 +249,7 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		return err
 	}
 
+	// WHAT? 协调处理一些 label
 	// syncing the labels from Pod to PVC and PV, these labels include:
 	//   - label.StoreIDLabelKey
 	//   - label.MemberIDLabelKey
@@ -234,6 +258,7 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		return err
 	}
 
+	// 删除没有 Pod 使用的 PVC，以及对应的 PV
 	// cleaning the pod scheduling annotation for pd and tikv
 	pvcSkipReasons, err := c.pvcCleaner.Clean(tc)
 	if err != nil {
@@ -245,11 +270,14 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		}
 	}
 
+	// 扩容 PVC
 	// resize PVC if necessary
 	if err := c.pvcResizer.Resize(tc); err != nil {
 		return err
 	}
 
+	// 同步 TiDBCluster status
+	// WHAT? 大多数 MemberManager 进行了同步，这里同步了啥？
 	// syncing the some tidbcluster status attributes
 	// 	- sync tidbmonitor reference
 	return c.tidbClusterStatusManager.Sync(tc)

@@ -331,6 +331,7 @@ func newDependencies(
 
 // NewDependencies is used to construct the dependencies
 func NewDependencies(ns string, cliCfg *CLIConfig, clientset versioned.Interface, kubeClientset kubernetes.Interface, genericCli client.Client) *Dependencies {
+	// WHAT? 这里 Informer option 过滤了哪些东西？
 	var (
 		options     []informers.SharedInformerOption
 		kubeoptions []kubeinformers.SharedInformerOption
@@ -354,6 +355,14 @@ func NewDependencies(ns string, cliCfg *CLIConfig, clientset versioned.Interface
 	}
 	options = append(options, informers.WithTweakListOptions(tweakListOptionsFunc))
 
+	// 初始化所有的 Informer
+	//  + Kubernetes 内置对象的 Informer
+	//		* 过滤 namespace
+	//		* 过滤 label "app.kubernetes.io/managed-by=tidb-operator"
+	//  + TiDBCluster 资源的 Informer
+	//		* 过滤 namespace
+	//		* 过滤 label "app.kubernetes.io/managed-by=tidb-operator"
+	//		* 过滤 config.selector
 	// Initialize the informer factories
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(clientset, cliCfg.ResyncDuration, options...)
 	kubeInformerFactory := kubeinformers.NewSharedInformerFactoryWithOptions(kubeClientset, cliCfg.ResyncDuration, kubeoptions...)

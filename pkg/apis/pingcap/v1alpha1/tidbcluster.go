@@ -812,6 +812,7 @@ func (tidbSvc *TiDBServiceSpec) GetStatusNodePort() int32 {
 	return int32(*statusNodePort)
 }
 
+// GetInstanceName 得到 helm 的 instance_name("app.kubernetes.io/instance")，或者 cluster name
 func (tc *TidbCluster) GetInstanceName() string {
 	labels := tc.ObjectMeta.GetLabels()
 	// Keep backward compatibility for helm.

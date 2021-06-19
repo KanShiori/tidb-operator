@@ -32,14 +32,15 @@ import (
 	"k8s.io/klog"
 )
 
+// Controller 为 TiDBCluster 的 controller
 // Controller controls tidbclusters.
 type Controller struct {
-	deps *controller.Dependencies
+	deps *controller.Dependencies // 所有组件依赖
 	// control returns an interface capable of syncing a tidb cluster.
 	// Abstracted out for testing.
-	control ControlInterface
+	control ControlInterface // 抽象 Control 接口，用于测试模拟
 	// tidbclusters that need to be synced.
-	queue workqueue.RateLimitingInterface
+	queue workqueue.RateLimitingInterface // Event Queue
 }
 
 // NewController creates a tidbcluster controller.
@@ -70,6 +71,13 @@ func NewController(deps *controller.Dependencies) *Controller {
 		),
 	}
 
+	// 向 Informer 注入回调
+	//
+	// 使用的 Informer 有：
+	//   1. TiDBCluster Informer : 监控 CR TiDBCluster 资源变化
+	//   2. StatefulSet Informer : TiDB Operator 所部署的组件（PD TiDB TiKV Pump TiCDC TiFlash）都是基于 StatefulSet 部署的，
+	//							   所以这里监控 StatefulSet 的变化
+	// 但是，所有的回调最后都会调用 enqueueTidbCluster 函数来进行入 queue 处理
 	tidbClusterInformer := deps.InformerFactory.Pingcap().V1alpha1().TidbClusters()
 	statefulsetInformer := deps.KubeInformerFactory.Apps().V1().StatefulSets()
 	tidbClusterInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -90,6 +98,7 @@ func NewController(deps *controller.Dependencies) *Controller {
 	return c
 }
 
+// Run TiDBCluster Controller 的入口函数
 // Run runs the tidbcluster controller.
 func (c *Controller) Run(workers int, stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
@@ -98,6 +107,7 @@ func (c *Controller) Run(workers int, stopCh <-chan struct{}) {
 	klog.Info("Starting tidbcluster controller")
 	defer klog.Info("Shutting down tidbcluster controller")
 
+	// 启动多个 worker，每个 worker 消费 Controller.work， 执行操作
 	for i := 0; i < workers; i++ {
 		go wait.Until(c.worker, time.Second, stopCh)
 	}
@@ -111,22 +121,30 @@ func (c *Controller) worker() {
 	}
 }
 
+// processNextWorkItem 处理一次来自 queue 的事件
 // processNextWorkItem dequeues items, processes them, and marks them done. It enforces that the syncHandler is never
 // invoked concurrently with the same key.
 func (c *Controller) processNextWorkItem() bool {
+	// 阻塞读取一个 event
+	// event 来自于 informer 的回调，将 event 放入了 queue 中
 	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
 	defer c.queue.Done(key)
+
+	// 进行 sync 协调调用
 	if err := c.sync(key.(string)); err != nil {
 		if perrors.Find(err, controller.IsRequeueError) != nil {
 			klog.Infof("TidbCluster: %v, still need sync: %v, requeuing", key.(string), err)
 		} else {
 			utilruntime.HandleError(fmt.Errorf("TidbCluster: %v, sync failed %v, requeuing", key.(string), err))
 		}
+
+		// 处理失败，重启加入队列重试，不过要收到 rate limit 限制
 		c.queue.AddRateLimited(key)
 	} else {
+		// 处理成功，从 rate limit 移除元素
 		c.queue.Forget(key)
 	}
 	return true
@@ -139,6 +157,7 @@ func (c *Controller) sync(key string) error {
 		klog.V(4).Infof("Finished syncing TidbCluster %q (%v)", key, time.Since(startTime))
 	}()
 
+	// 从 key 得到 TiDBCluster 对象
 	ns, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -146,12 +165,17 @@ func (c *Controller) sync(key string) error {
 	tc, err := c.deps.TiDBClusterLister.TidbClusters(ns).Get(name)
 	if errors.IsNotFound(err) {
 		klog.Infof("TidbCluster has been deleted %v", key)
+		// 已经被删除，直接返回
+		// NOTE: 因为 Kubernetes 中删除对象，会先标记其对象被删除 (deletionTimestamp)，然后 controller 清理，最后清理对象记录
+		// 所以这里是对象记录都被删除了，表明经过了清理流程，因此直接返回
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 
+	// 进行 sync
+	// WHY? 这里为什么需要进行 Deepcopy
 	return c.syncTidbCluster(tc.DeepCopy())
 }
 
@@ -159,6 +183,7 @@ func (c *Controller) syncTidbCluster(tc *v1alpha1.TidbCluster) error {
 	return c.control.UpdateTidbCluster(tc)
 }
 
+// enqueueTidbCluster 为 TiDBCluster Add Update Delete 的回调，将 key 放入 queue
 // enqueueTidbCluster enqueues the given tidbcluster in the work queue.
 func (c *Controller) enqueueTidbCluster(obj interface{}) {
 	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
@@ -169,6 +194,7 @@ func (c *Controller) enqueueTidbCluster(obj interface{}) {
 	c.queue.Add(key)
 }
 
+// addStatefulSet 为 StatefulSet Add 回调
 // addStatefulSet adds the tidbcluster for the statefulset to the sync queue
 func (c *Controller) addStatefulSet(obj interface{}) {
 	set := obj.(*apps.StatefulSet)
@@ -182,6 +208,7 @@ func (c *Controller) addStatefulSet(obj interface{}) {
 		return
 	}
 
+	// 当 StatefuleSet 新创建时，更新 TiDBCluster status
 	// If it has a ControllerRef, that's all that matters.
 	tc := c.resolveTidbClusterFromSet(ns, set)
 	if tc == nil {
@@ -191,6 +218,7 @@ func (c *Controller) addStatefulSet(obj interface{}) {
 	c.enqueueTidbCluster(tc)
 }
 
+// updateStatefulSet 为 StatefulSet Update 回调
 // updateStatefulSet adds the tidbcluster for the current and old statefulsets to the sync queue.
 func (c *Controller) updateStatefulSet(old, cur interface{}) {
 	curSet := cur.(*apps.StatefulSet)
@@ -212,6 +240,7 @@ func (c *Controller) updateStatefulSet(old, cur interface{}) {
 	c.enqueueTidbCluster(tc)
 }
 
+// deleteStatefulSet 为 StatefulSet Delete 回调
 // deleteStatefulSet enqueues the tidbcluster for the statefulset accounting for deletion tombstones.
 func (c *Controller) deleteStatefulSet(obj interface{}) {
 	set, ok := obj.(*apps.StatefulSet)

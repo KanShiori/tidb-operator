@@ -74,16 +74,19 @@ func (m *pdMemberManager) Sync(tc *v1alpha1.TidbCluster) error {
 		return nil
 	}
 
+	// 协调 PD Service
 	// Sync PD Service
 	if err := m.syncPDServiceForTidbCluster(tc); err != nil {
 		return err
 	}
 
+	// 协调 PD Headless Service
 	// Sync PD Headless Service
 	if err := m.syncPDHeadlessServiceForTidbCluster(tc); err != nil {
 		return err
 	}
 
+	// 协调 PD StatusfulSet
 	// Sync PD StatefulSet
 	return m.syncPDStatefulSetForTidbCluster(tc)
 }
@@ -176,6 +179,7 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 获取当前 StatefulSet
 	oldPDSetTmp, err := m.deps.StatefulSetLister.StatefulSets(ns).Get(controller.PDMemberName(tcName))
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("syncPDStatefulSetForTidbCluster: fail to get sts %s for cluster %s/%s, error: %s", controller.PDMemberName(tcName), ns, tcName, err)
@@ -184,6 +188,7 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 
 	oldPDSet := oldPDSetTmp.DeepCopy()
 
+	// 更新 PD status
 	if err := m.syncTidbClusterStatus(tc, oldPDSet); err != nil {
 		klog.Errorf("failed to sync TidbCluster: [%s/%s]'s status, error: %v", ns, tcName, err)
 	}
@@ -193,15 +198,19 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		return nil
 	}
 
+	// 协调 Configmap
 	cm, err := m.syncPDConfigMap(tc, oldPDSet)
 	if err != nil {
 		return err
 	}
+
+	// 拼接 StatefulSet
 	newPDSet, err := getNewPDSetForTidbCluster(tc, cm)
 	if err != nil {
 		return err
 	}
 	if setNotExist {
+		// 不存在，创建 StatefulSet
 		err = SetStatefulSetLastAppliedConfigAnnotation(newPDSet)
 		if err != nil {
 			return err
@@ -213,6 +222,7 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		return controller.RequeueErrorf("TidbCluster: [%s/%s], waiting for PD cluster running", ns, tcName)
 	}
 
+	// WHAT? 强制更新？？
 	// Force update takes precedence over scaling because force upgrade won't take effect when cluster gets stuck at scaling
 	if !tc.Status.PD.Synced && NeedForceUpgrade(tc.Annotations) {
 		tc.Status.PD.Phase = v1alpha1.UpgradePhase
@@ -221,6 +231,7 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		return controller.RequeueErrorf("tidbcluster: [%s/%s]'s pd needs force upgrade, %v", ns, tcName, errSTS)
 	}
 
+	// Scale 业务上的缩扩容处理
 	// Scaling takes precedence over upgrading because:
 	// - if a pd fails in the upgrading, users may want to delete it or add
 	//   new replicas
@@ -230,6 +241,7 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		return err
 	}
 
+	// 自动恢复
 	if m.deps.CLIConfig.AutoFailover {
 		if m.shouldRecover(tc) {
 			m.failover.Recover(tc)
@@ -240,12 +252,14 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 		}
 	}
 
+	// 业务上的升级
 	if !templateEqual(newPDSet, oldPDSet) || tc.Status.PD.Phase == v1alpha1.UpgradePhase {
 		if err := m.upgrader.Upgrade(tc, oldPDSet, newPDSet); err != nil {
 			return err
 		}
 	}
 
+	// 交给 StatefulSet 执行
 	return UpdateStatefulSet(m.deps.StatefulSetControl, tc, newPDSet, oldPDSet)
 }
 
@@ -734,6 +748,7 @@ func getNewPDSetForTidbCluster(tc *v1alpha1.TidbCluster, cm *corev1.ConfigMap) (
 		},
 	}
 
+	// StatefulSet 中的 Pod Template
 	podSpec := basePDSpec.BuildPodSpec()
 	if basePDSpec.HostNetwork() {
 		podSpec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
@@ -766,6 +781,7 @@ func getNewPDSetForTidbCluster(tc *v1alpha1.TidbCluster, cm *corev1.ConfigMap) (
 		}
 	}
 
+	// 构建 StatefulSet 对象
 	pdSet := &apps.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            setName,

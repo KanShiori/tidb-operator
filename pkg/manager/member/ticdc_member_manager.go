@@ -119,24 +119,34 @@ func (m *ticdcMemberManager) syncTiCDCConfigMap(tc *v1alpha1.TidbCluster, set *a
 	return m.deps.TypedControl.CreateOrUpdateConfigMap(tc, newCm)
 }
 
+// Sync 进行一次 TiDB Cluster 中 TiCDC 相关的同步
+//  + Headless Service
+//  + TiCDC Status
+//  + ConfigMap (optional)
+//  + StatefulSet (create | scale)
 // Sync fulfills the manager.Manager interface
 func (m *ticdcMemberManager) Sync(tc *v1alpha1.TidbCluster) error {
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 没有指定 TiCDC，直接返回
 	if tc.Spec.TiCDC == nil {
 		return nil
 	}
+
+	// TiCluster 被暂停, 啥也不做返回
 	if tc.Spec.Paused {
 		klog.Infof("TidbCluster %s/%s is paused, skip syncing ticdc deployment", ns, tcName)
 		return nil
 	}
 
+	// sync Service
 	// Sync CDC Headless Service
 	if err := m.syncCDCHeadlessService(tc); err != nil {
 		return err
 	}
 
+	// sync Stateful Set
 	return m.syncStatefulSet(tc)
 }
 
@@ -144,6 +154,7 @@ func (m *ticdcMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 获取 old StatefulSet
 	oldStsTmp, err := m.deps.StatefulSetLister.StatefulSets(ns).Get(controller.TiCDCMemberName(tcName))
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("syncStatefulSet: failed to get sts %s for cluster %s/%s, error: %s", controller.TiCDCMemberName(tcName), ns, tcName, err)
@@ -152,12 +163,14 @@ func (m *ticdcMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 	stsNotExist := errors.IsNotFound(err)
 	oldSts := oldStsTmp.DeepCopy()
 
+	// sync TiCDC status
 	// failed to sync ticdc status will not affect subsequent logic, just print the errors.
 	if err := m.syncTiCDCStatus(tc, oldSts); err != nil {
 		klog.Errorf("failed to sync TidbCluster: [%s/%s]'s ticdc status, error: %v",
 			ns, tcName, err)
 	}
 
+	// sync config map (如果配置了 TiDBCluster.spec.ticdc.config 了的话)
 	cm, err := m.syncTiCDCConfigMap(tc, oldSts)
 	if err != nil {
 		return err
@@ -169,14 +182,19 @@ func (m *ticdcMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 	}
 
 	if stsNotExist {
+		// 创建 Stateful Set
 		if !tc.PDIsAvailable() {
 			klog.Infof("TidbCluster: %s/%s, waiting for PD cluster running", ns, tcName)
 			return nil
 		}
+
+		// 添加 "pingcap.com/last-applied-configuration" annotation
 		err = SetStatefulSetLastAppliedConfigAnnotation(newSts)
 		if err != nil {
 			return err
 		}
+
+		// 创建 StatefulSet
 		err = m.deps.StatefulSetControl.CreateStatefulSet(tc, newSts)
 		if err != nil {
 			return err
@@ -184,6 +202,8 @@ func (m *ticdcMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 		return nil
 	}
 
+	// 开始缩扩容
+	// WHY? Scale 的具体流程
 	// Scaling takes precedence over upgrading because:
 	// - if a pod fails in the upgrading, users may want to delete it or add
 	//   new replicas
@@ -193,16 +213,20 @@ func (m *ticdcMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 		return err
 	}
 
+	// 更新了 Pod 模板，或者 TiCDC 已经处于升级状态，走 TiCDC Upgrade 流程
+	// 这里负责的是 TiCDC 业务上的升级操作，可以理解为 StatefulSet 升级前的回调
 	if !templateEqual(newSts, oldSts) || tc.Status.TiCDC.Phase == v1alpha1.UpgradePhase {
 		if err := m.ticdcUpgrader.Upgrade(tc, oldSts, newSts); err != nil {
 			return err
 		}
 	}
 
+	// 更新 StatefulSet
 	return UpdateStatefulSet(m.deps.StatefulSetControl, tc, newSts, oldSts)
 }
 
 func (m *ticdcMemberManager) syncTiCDCStatus(tc *v1alpha1.TidbCluster, sts *apps.StatefulSet) error {
+	// StatefulSet 还未创建
 	if sts == nil {
 		// skip if not created yet
 		return nil
@@ -211,18 +235,24 @@ func (m *ticdcMemberManager) syncTiCDCStatus(tc *v1alpha1.TidbCluster, sts *apps
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 检查 StatefulSet 是否是需要升级
+	// 通过判断 Pod Revision 与  StatefulSet UpdateRevision
 	tc.Status.TiCDC.StatefulSet = &sts.Status
 	upgrading, err := m.statefulSetIsUpgradingFn(m.deps.PodLister, m.deps.PDControl, sts, tc)
 	if err != nil {
 		return err
 	}
 	if upgrading {
-		tc.Status.TiCDC.Phase = v1alpha1.UpgradePhase
+		tc.Status.TiCDC.Phase = v1alpha1.UpgradePhase // 更新 TiCDC 阶段为升级
 	} else {
 		tc.Status.TiCDC.Phase = v1alpha1.NormalPhase
 	}
 
+	// 收集 TiCDC Captures 信息
+	// 通过调用  http://<pod_peer>:8031/status 接口判断 capture
 	ticdcCaptures := map[string]v1alpha1.TiCDCCapture{}
+	// 获取所有 Pod 的编号
+	// 这里是为了 Advanced StatefulSet，因为 Advanced StatefulSet 允许部分中间编号不存在的 Pod
 	for id := range helper.GetPodOrdinals(tc.Status.TiCDC.StatefulSet.Replicas, sts) {
 		podName := fmt.Sprintf("%s-%d", controller.TiCDCMemberName(tc.GetName()), id)
 		capture, err := m.deps.CDCControl.GetStatus(tc, int32(id))
@@ -237,6 +267,8 @@ func (m *ticdcMemberManager) syncTiCDCStatus(tc *v1alpha1.TidbCluster, sts *apps
 			}
 		}
 	}
+
+	// captures 数量等于期望的数量时，Synced 为 true
 	if len(ticdcCaptures) == int(tc.TiCDCDeployDesiredReplicas()) {
 		tc.Status.TiCDC.Synced = true
 	}
@@ -249,32 +281,44 @@ func (m *ticdcMemberManager) syncCDCHeadlessService(tc *v1alpha1.TidbCluster) er
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 构造 Headless Service 对象
 	newSvc := getNewCDCHeadlessService(tc)
+
+	// 查询当前的对应的 Service 对象
 	oldSvcTmp, err := m.deps.ServiceLister.Services(ns).Get(controller.TiCDCPeerMemberName(tcName))
 	if errors.IsNotFound(err) {
+		// 配置 annotation "pingcap.com/last-applied-configuration": "spec"
 		err = controller.SetServiceLastAppliedConfigAnnotation(newSvc)
 		if err != nil {
 			return err
 		}
+		// 创建 service
 		return m.deps.ServiceControl.CreateService(tc, newSvc)
 	}
 	if err != nil {
 		return fmt.Errorf("syncCDCHeadlessService: failed to get svc %s for cluster %s/%s, error: %s", controller.TiCDCPeerMemberName(tcName), ns, tcName, err)
 	}
 
+	// 已有对应的 Service 对象
 	oldSvc := oldSvcTmp.DeepCopy()
 
+	// 对比 spec 是否有变更
 	equal, err := controller.ServiceEqual(newSvc, oldSvc)
 	if err != nil {
 		return err
 	}
 	if !equal {
+		// 不相等，需要进行协调
 		svc := *oldSvc
 		svc.Spec = newSvc.Spec
+
+		// 配置 annotation "pingcap.com/last-applied-configuration": "spec"
 		err = controller.SetServiceLastAppliedConfigAnnotation(&svc)
 		if err != nil {
 			return err
 		}
+
+		// 更新实际的 Service
 		_, err = m.deps.ServiceControl.UpdateService(tc, &svc)
 		return err
 	}
@@ -282,23 +326,34 @@ func (m *ticdcMemberManager) syncCDCHeadlessService(tc *v1alpha1.TidbCluster) er
 	return nil
 }
 
+// getNewCDCHeadlessService 构造出静态的 Service 对象
 func getNewCDCHeadlessService(tc *v1alpha1.TidbCluster) *corev1.Service {
 	ns := tc.Namespace
 	tcName := tc.Name
 	instanceName := tc.GetInstanceName()
-	svcName := controller.TiCDCPeerMemberName(tcName)
+	svcName := controller.TiCDCPeerMemberName(tcName) // ticdc headless service name: <cluster_name>-ticdc-peer
+	// 给 service 添加的 label:
+	//  + app.kubernetes.io/name: tidb-cluster
+	//  + app.kubernetes.io/instance: <instance_name>/<cluster_name>
+	//  + app.kubernetes.io/component: ticdc
+	//  + app.kubernetes.io/managed-by: tidb-operator
 	svcLabel := label.New().Instance(instanceName).TiCDC().Labels()
 
+	// 构建 Service
+	// 主要是 ObjectMeta + Spec 字段
 	svc := corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            svcName,
-			Namespace:       ns,
-			Labels:          svcLabel,
+			Name:      svcName,
+			Namespace: ns,
+			Labels:    svcLabel,
+			// 设置 Service 属于 TiDBCluster
+			// 其删除时会要求 TiDBCluster 先删除，由于 OwnerReference.BlockOwnerDeletion 为 true
 			OwnerReferences: []metav1.OwnerReference{controller.GetOwnerRef(tc)},
 		},
 		Spec: corev1.ServiceSpec{
-			ClusterIP: "None",
+			ClusterIP: "None", // Headless Service
 			Ports: []corev1.ServicePort{
+				// 一个 ClusterPort: TCP 8301->8301 端口
 				{
 					Name:       "ticdc",
 					Port:       8301,
@@ -306,8 +361,13 @@ func getNewCDCHeadlessService(tc *v1alpha1.TidbCluster) *corev1.Service {
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},
+			// pod label selector
+			//  + app.kubernetes.io/name: tidb-cluster
+			//  + app.kubernetes.io/instance: <instance_name>/<cluster_name>
+			//  + app.kubernetes.io/component: ticdc
+			//  + app.kubernetes.io/managed-by: tidb-operator
 			Selector:                 svcLabel,
-			PublishNotReadyAddresses: true,
+			PublishNotReadyAddresses: true, // Pod 不是 Ready 也提供 Headless Service DNS 记录
 		},
 	}
 	return &svc
@@ -541,6 +601,7 @@ func labelTiCDC(tc *v1alpha1.TidbCluster) label.Label {
 	return label.New().Instance(instanceName).TiCDC()
 }
 
+// ticdcStatefulSetIsUpgrading 检查 StatefulSet State 是否有更新
 func ticdcStatefulSetIsUpgrading(podLister corelisters.PodLister, pdControl pdapi.PDControlInterface, set *apps.StatefulSet, tc *v1alpha1.TidbCluster) (bool, error) {
 	if statefulSetIsUpgrading(set) {
 		return true, nil
@@ -559,11 +620,14 @@ func ticdcStatefulSetIsUpgrading(podLister corelisters.PodLister, pdControl pdap
 		if !exist {
 			return false, nil
 		}
+
+		// 检查版本是否一致，一致表明 StatefulSet 需要进行升级操作
 		if revisionHash != tc.Status.TiCDC.StatefulSet.UpdateRevision {
 			return true, nil
 		}
 	}
 
+	// 走到这里，说明所有 Pod 版本都是正确的，那么就不需要进行升级
 	return false, nil
 }
 

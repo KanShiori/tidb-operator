@@ -40,6 +40,7 @@ func (m *metaManager) Sync(tc *v1alpha1.TidbCluster) error {
 	ns := tc.GetNamespace()
 	instanceName := tc.GetInstanceName()
 
+	// 得到集群管理的所有 Pod
 	l, err := label.New().Instance(instanceName).Selector()
 	if err != nil {
 		return err
@@ -49,6 +50,8 @@ func (m *metaManager) Sync(tc *v1alpha1.TidbCluster) error {
 		return fmt.Errorf("metaManager.Sync: failed to list pods for cluster %s/%s, selector: %s, error: %v", ns, instanceName, l, err)
 	}
 
+	// 遍历 Pod 更新 meta info
+	// 更新的操作有 deps.PodControl 与 deps.PVCControl 控制
 	for _, pod := range pods {
 		// update meta info for pod
 		_, err := m.deps.PodControl.UpdateMetaInfo(tc, pod)
@@ -73,6 +76,7 @@ func (m *metaManager) Sync(tc *v1alpha1.TidbCluster) error {
 			continue
 		}
 
+		// 更新 PVC meta info
 		// update meta info for pvc
 		pvcs, err := util.ResolvePVCFromPod(pod, m.deps.PVCLister)
 		if err != nil {

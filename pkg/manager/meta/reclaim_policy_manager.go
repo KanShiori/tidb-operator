@@ -27,6 +27,7 @@ import (
 	"k8s.io/klog"
 )
 
+// reclaimPolicyManager 将各个组件使用的 PV 的 spec.persistentVolumeReclaimPolicy.Retain (默认下)
 type reclaimPolicyManager struct {
 	deps *controller.Dependencies
 }
@@ -38,6 +39,7 @@ func NewReclaimPolicyManager(deps *controller.Dependencies) *reclaimPolicyManage
 	}
 }
 
+// Sync 进行 TiDBCluster 相关的 PVC 的协调
 func (m *reclaimPolicyManager) Sync(tc *v1alpha1.TidbCluster) error {
 	return m.sync(v1alpha1.TiDBClusterKind, tc, tc.IsPVReclaimEnabled(), *tc.Spec.PVReclaimPolicy)
 }
@@ -64,6 +66,7 @@ func (m *reclaimPolicyManager) sync(kind string, obj runtime.Object, isPVReclaim
 		err          error
 	)
 
+	// 根据类型不同的 selector
 	switch kind {
 	case v1alpha1.TiDBClusterKind:
 		selector, err = label.New().Instance(instanceName).Selector()
@@ -78,29 +81,37 @@ func (m *reclaimPolicyManager) sync(kind string, obj runtime.Object, isPVReclaim
 		return err
 	}
 
+	// 得到对应的 PVC
 	pvcs, err := m.deps.PVCLister.PersistentVolumeClaims(ns).List(selector)
 	if err != nil {
 		return fmt.Errorf("reclaimPolicyManager.sync: failed to list pvc for %s %s/%s, selector %s, error: %s", kind, ns, instanceName, selector, err)
 	}
 	for _, pvc := range pvcs {
+		// 是否绑定到 PV
 		if pvc.Spec.VolumeName == "" {
 			continue
 		}
+		// 取消了 PV Reclaim 并且 annotation "tidb.pingcap.com/pvc-defer-deleting" 表明需要延迟删除
 		if isPVReclaimEnabled && len(pvc.Annotations[label.AnnPVCDeferDeleting]) != 0 {
 			// If the PV reclaim setting is enabled, and when PV is a candidate to be reclaimed, skip patching this PV.
 			continue
 		}
+		// PV 不被任何组件使用
 		if l := label.Label(pvc.Labels); kind == v1alpha1.TiDBClusterKind && (!l.IsPD() && !l.IsTiDB() && !l.IsTiKV() && !l.IsTiFlash() && !l.IsPump()) {
 			continue
 		}
+
+		// 检查 PV 状态
 		pv, err := m.deps.PVLister.Get(pvc.Spec.VolumeName)
 		if err != nil {
 			return fmt.Errorf("reclaimPolicyManager.sync: failed to get pvc %s for %s %s/%s, error: %s", pvc.Spec.VolumeName, kind, ns, instanceName, err)
 		}
-
+		// PV 模式符合
 		if pv.Spec.PersistentVolumeReclaimPolicy == policy {
 			continue
 		}
+
+		// 到这里，PV 状态不符合 (Reclaim)，进行 Patch 更新
 		err = m.deps.PVControl.PatchPVReclaimPolicy(obj, pv, policy)
 		if err != nil {
 			return err

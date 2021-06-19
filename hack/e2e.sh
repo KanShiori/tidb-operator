@@ -24,6 +24,7 @@ set -o pipefail
 ROOT=$(unset CDPATH && cd $(dirname "${BASH_SOURCE[0]}")/.. && pwd)
 cd $ROOT
 
+# 执行 lib.sh
 source "${ROOT}/hack/lib.sh"
 
 # check bash version
@@ -424,6 +425,7 @@ EOF
     }
 }
 
+# 安装 kind kubectl helm
 hack::ensure_kind
 hack::ensure_kubectl
 hack::ensure_helm
@@ -432,6 +434,9 @@ if [ -n "$DOCKER_IO_MIRROR" -a -n "${DOCKER_IN_DOCKER_ENABLED:-}" ]; then
     e2e::__configure_docker_mirror_for_dind
 fi
 
+# build image
+#  1. make docker
+#  2. make e2e-docker
 e2e::image_build
 
 kubetest2_args=(
@@ -456,7 +461,9 @@ if [ -z "$SKIP_TEST" ]; then
     kubetest2_args+=(--test exec)
 fi
 
+# 准备集群环境
 if [ "$PROVIDER" == "kind" ]; then
+    # 准备 kind 环境
     tmpfile=$(mktemp)
     trap "test -f $tmpfile && rm $tmpfile" EXIT
     e2e::create_kindconfig $tmpfile
@@ -486,6 +493,7 @@ if [ "$PROVIDER" == "kind" ]; then
         --verbosity 4
     )
 elif [ "$PROVIDER" == "gke" ]; then
+    # 准备 gke 环境
     if [ -z "$GCP_PROJECT" ]; then
         echo "error: GCP_PROJECT is required"
         exit 1
@@ -539,6 +547,7 @@ EOF
         )
     fi
 elif [ "$PROVIDER" == "eks" ]; then
+    # 准备 eks 环境
     export KUBE_SSH_USER=ec2-user
     hack::ensure_aws_k8s_tester
     if [ -z "$AWS_REGION" ]; then
@@ -621,8 +630,10 @@ if [ -n "${ARTIFACTS}" -a -z "$SKIP_DUMP" ]; then
     kubetest2_args+=(--dump)
 fi
 
+# 确认 kubetest2 命名存在
 hack::ensure_kubetest2
 echo "info: run 'kubetest2 ${kubetest2_args[@]} -- hack/run-e2e.sh $@'"
+# 执行 kubetext2 命令
 # example kubetest2 command:
 # kubetest2 kind \
 #     --up \

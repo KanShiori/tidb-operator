@@ -76,11 +76,14 @@ func (m *tiflashMemberManager) Sync(tc *v1alpha1.TidbCluster) error {
 		klog.Errorf("Enable placement rules failed, error: %v", err)
 		// No need to return err here, just continue to sync tiflash
 	}
+
+	// 协调 Headless Service
 	// Sync TiFlash Headless Service
 	if err = m.syncHeadlessService(tc); err != nil {
 		return err
 	}
 
+	// 协调 StatefuleSet
 	return m.syncStatefulSet(tc)
 }
 
@@ -90,6 +93,7 @@ func (m *tiflashMemberManager) enablePlacementRules(tc *v1alpha1.TidbCluster) er
 	if err != nil {
 		return err
 	}
+	// 如果开启了 Placement Rule，调用 PD 接口更新配置
 	if config.Replication.EnablePlacementRules != nil && (!*config.Replication.EnablePlacementRules) {
 		klog.Infof("Cluster %s/%s enable-placement-rules is %v, set it to true", tc.Namespace, tc.Name, *config.Replication.EnablePlacementRules)
 		enable := true
@@ -147,6 +151,7 @@ func (m *tiflashMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 获取当前的 StatefuleSet
 	oldSetTmp, err := m.deps.StatefulSetLister.StatefulSets(ns).Get(controller.TiFlashMemberName(tcName))
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("syncStatefulSet: fail to get sts %s for cluster %s/%s, error: %s", controller.TiFlashMemberName(tcName), ns, tcName, err)
@@ -155,6 +160,7 @@ func (m *tiflashMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 
 	oldSet := oldSetTmp.DeepCopy()
 
+	// 更新 StatefuleSet status
 	if err := m.syncTidbClusterStatus(tc, oldSet); err != nil {
 		return err
 	}
@@ -164,11 +170,13 @@ func (m *tiflashMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 		return nil
 	}
 
+	// 协调 Configmap
 	cm, err := m.syncConfigMap(tc, oldSet)
 	if err != nil {
 		return err
 	}
 
+	// 恢复错误的 Store
 	// Recover failed stores if any before generating desired statefulset
 	if len(tc.Status.TiFlash.FailureStores) > 0 {
 		m.failover.RemoveUndesiredFailures(tc)
@@ -179,11 +187,13 @@ func (m *tiflashMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 		m.failover.Recover(tc)
 	}
 
+	// 拼接得到 StatefulSet 结构
 	newSet, err := getNewStatefulSet(tc, cm)
 	if err != nil {
 		return err
 	}
 	if setNotExist {
+		// StatefulSet 不存在，创建新的 StatefulSet
 		if !tc.PDIsAvailable() {
 			klog.Infof("TidbCluster: %s/%s, waiting for PD cluster running", ns, tcName)
 			return nil
@@ -200,10 +210,12 @@ func (m *tiflashMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 		return nil
 	}
 
+	// 传递 pd.config 中设置的 label 到 PD Store
 	if _, err := m.setStoreLabelsForTiFlash(tc); err != nil {
 		return err
 	}
 
+	// 缩扩容处理，这里是业务上的缩扩容处理，而不是 Pod 级别的
 	// Scaling takes precedence over upgrading because:
 	// - if a tiflash fails in the upgrading, users may want to delete it or add
 	//   new replicas
@@ -213,6 +225,7 @@ func (m *tiflashMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 		return err
 	}
 
+	// 自动恢复流程
 	if m.deps.CLIConfig.AutoFailover && tc.Spec.TiFlash.MaxFailoverCount != nil {
 		if tc.TiFlashAllPodsStarted() && !tc.TiFlashAllStoresReady() {
 			if err := m.failover.Failover(tc); err != nil {
@@ -221,12 +234,14 @@ func (m *tiflashMemberManager) syncStatefulSet(tc *v1alpha1.TidbCluster) error {
 		}
 	}
 
+	// 升级处理，这里是业务上的升级处理
 	if !templateEqual(newSet, oldSet) || tc.Status.TiFlash.Phase == v1alpha1.UpgradePhase {
 		if err := m.upgrader.Upgrade(tc, oldSet, newSet); err != nil {
 			return err
 		}
 	}
 
+	// Kubernetes 即使的 StatefulSet 处理
 	return UpdateStatefulSet(m.deps.StatefulSetControl, tc, newSet, oldSet)
 }
 
@@ -646,10 +661,14 @@ func (m *tiflashMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, s
 		return nil
 	}
 	tc.Status.TiFlash.StatefulSet = &set.Status
+
+	// 检查是否正在升级中
 	upgrading, err := m.statefulSetIsUpgradingFn(m.deps.PodLister, m.deps.PDControl, set, tc)
 	if err != nil {
 		return err
 	}
+
+	// 更新 TiFlash Phase
 	if tc.TiFlashStsDesiredReplicas() != *set.Spec.Replicas {
 		tc.Status.TiFlash.Phase = v1alpha1.ScalePhase
 	} else if upgrading {
@@ -664,6 +683,8 @@ func (m *tiflashMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, s
 	peerStores := map[string]v1alpha1.TiKVStore{}
 	tombstoneStores := map[string]v1alpha1.TiKVStore{}
 
+	// 获取 TiFlash store 信息
+	// url: http://<addr>:2379/pd/api/v1/stores
 	pdCli := controller.GetPDClient(m.deps.PDControl, tc)
 	// This only returns Up/Down/Offline stores
 	storesInfo, err := pdCli.GetStores()
@@ -673,6 +694,8 @@ func (m *tiflashMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, s
 		return err
 	}
 
+	// 筛选出 TiFlash 的 Store
+	// 通过 store.status.address 进行筛选
 	pattern, err := regexp.Compile(fmt.Sprintf(tiflashStoreLimitPattern, tc.Name, tc.Name, tc.Namespace, controller.FormatClusterDomainForRegex(tc.Spec.ClusterDomain)))
 	if err != nil {
 		return err
@@ -702,6 +725,8 @@ func (m *tiflashMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, s
 		}
 	}
 
+	// 获取 TombStore 信息
+	// url: http://<addr>:2379/pd/api/v1/stores?state=2
 	//this returns all tombstone stores
 	tombstoneStoresInfo, err := pdCli.GetTombStoneStores()
 	if err != nil {
@@ -720,6 +745,7 @@ func (m *tiflashMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, s
 		tombstoneStores[status.ID] = *status
 	}
 
+	// 更新 TiFlash 信息到 TiDBCluster
 	tc.Status.TiFlash.Synced = true
 	tc.Status.TiFlash.Stores = stores
 	tc.Status.TiFlash.PeerStores = peerStores
@@ -775,6 +801,7 @@ func (m *tiflashMemberManager) setStoreLabelsForTiFlash(tc *v1alpha1.TidbCluster
 		return setCount, nil
 	}
 
+	// 传递 pd.config 中设置的 Label 到 PD Store
 	pattern, err := regexp.Compile(fmt.Sprintf(tiflashStoreLimitPattern, tc.Name, tc.Name, tc.Namespace, controller.FormatClusterDomainForRegex(tc.Spec.ClusterDomain)))
 	if err != nil {
 		return -1, err

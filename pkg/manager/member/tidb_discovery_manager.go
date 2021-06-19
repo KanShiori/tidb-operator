@@ -37,6 +37,7 @@ const (
 	PdTlsCertPath = "/var/lib/pd-tls"
 )
 
+// TidbDiscoveryManager 负责 PD 与 DM 的服务发现
 type TidbDiscoveryManager interface {
 	Reconcile(obj runtime.Object) error
 }
@@ -49,6 +50,13 @@ func NewTidbDiscoveryManager(deps *controller.Dependencies) TidbDiscoveryManager
 	return &realTidbDiscoveryManager{deps: deps}
 }
 
+// Reconcile 进行 Discovery 相关的协调
+// 包括：
+//  + Role
+//  + ServiceAccount
+//  + RoleBinding
+//  + Deployment
+//  + Service
 func (m *realTidbDiscoveryManager) Reconcile(obj runtime.Object) error {
 	metaObj, ok := obj.(metav1.Object)
 	if !ok {
@@ -84,6 +92,8 @@ func (m *realTidbDiscoveryManager) Reconcile(obj runtime.Object) error {
 
 	meta, _ := getDiscoveryMeta(metaObj, controller.DiscoveryMemberName)
 	// Ensure RBAC
+	// 确保 RBAC 存在
+	//   + Role: Secret 对象具有 get 与 list 权限
 	_, err := m.deps.TypedControl.CreateOrUpdateRole(obj, &rbacv1.Role{
 		ObjectMeta: meta,
 		Rules: []rbacv1.PolicyRule{
@@ -98,12 +108,14 @@ func (m *realTidbDiscoveryManager) Reconcile(obj runtime.Object) error {
 	if err != nil {
 		return controller.RequeueErrorf("error creating or updating discovery role: %v", err)
 	}
+	// 确保 ServiceAccount 存在
 	_, err = m.deps.TypedControl.CreateOrUpdateServiceAccount(obj, &corev1.ServiceAccount{
 		ObjectMeta: meta,
 	})
 	if err != nil {
 		return controller.RequeueErrorf("error creating or updating discovery serviceaccount: %v", err)
 	}
+	// 确保 RoleBinding 存在
 	_, err = m.deps.TypedControl.CreateOrUpdateRoleBinding(obj, &rbacv1.RoleBinding{
 		ObjectMeta: meta,
 		Subjects: []rbacv1.Subject{{
@@ -119,6 +131,7 @@ func (m *realTidbDiscoveryManager) Reconcile(obj runtime.Object) error {
 	if err != nil {
 		return controller.RequeueErrorf("error creating or updating discovery rolebinding: %v", err)
 	}
+	// 确保 Deployment 存在
 	d, err := m.getTidbDiscoveryDeployment(metaObj)
 	if err != nil {
 		return controller.RequeueErrorf("error generating discovery deployment: %v", err)
@@ -127,6 +140,8 @@ func (m *realTidbDiscoveryManager) Reconcile(obj runtime.Object) error {
 	if err != nil {
 		return controller.RequeueErrorf("error creating or updating discovery service: %v", err)
 	}
+
+	// 确保 Service
 	// RBAC ensured, reconcile
 	_, err = m.deps.TypedControl.CreateOrUpdateService(obj, getTidbDiscoveryService(metaObj, deploy))
 	if err != nil {

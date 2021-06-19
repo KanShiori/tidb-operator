@@ -60,6 +60,7 @@ func NewRealPVCCleaner(deps *controller.Dependencies) PVCCleanerInterface {
 }
 
 func (c *realPVCCleaner) Clean(meta metav1.Object) (map[string]string, error) {
+	// 清理 bound PV 的 "tidb.pingcap.com/pod-scheduling"
 	if skipReason, err := c.cleanScheduleLock(meta); err != nil {
 		return skipReason, err
 	}
@@ -86,6 +87,7 @@ func (c *realPVCCleaner) reclaimPV(meta metav1.Object) (map[string]string, error
 
 	skipReason := map[string]string{}
 
+	// 得到所有使用的 PVC
 	pvcs, err := c.listAllPVCs(meta)
 	if err != nil {
 		return skipReason, err
@@ -95,6 +97,14 @@ func (c *realPVCCleaner) reclaimPV(meta metav1.Object) (map[string]string, error
 	for _, pvc := range pvcs {
 		pvcName := pvc.GetName()
 		l := label.Label(pvc.Labels)
+
+		// 过滤 PVC
+		//  + label "app.kubernetes.io/component" 属于 TiDB 组件
+		//  + PVC phase 为 Bound
+		//  + DeletionTimestamp 存在，即被删除了
+		//  + 设置了 annotation "tidb.pingcap.com/pvc-defer-deleting"
+		//  + annotation "tidb.pingcap.com/pod-name" 存在
+		//  + 对应 Pod 已经不存存在
 		if !(l.IsPD() || l.IsTiKV() || l.IsTiFlash() || l.IsDMMaster() || l.IsDMWorker()) {
 			skipReason[pvcName] = skipReasonPVCCleanerIsNotTarget
 			continue
@@ -147,6 +157,7 @@ func (c *realPVCCleaner) reclaimPV(meta metav1.Object) (map[string]string, error
 			return skipReason, fmt.Errorf("%s %s/%s get pvc %s pod %s from apiserver failed, err: %v", clusterType, ns, metaName, pvcName, podName, err)
 		}
 
+		// 回收 PV（设置回收策略为 Delete）
 		// Without pod reference this defer delete PVC, start to reclaim PV
 		pvName := pvc.Spec.VolumeName
 		if c.deps.PVLister != nil {
@@ -170,6 +181,7 @@ func (c *realPVCCleaner) reclaimPV(meta metav1.Object) (map[string]string, error
 			klog.V(4).Infof("Persistent volumes lister is unavailable, skip updating the reclaim policy for %s. This may be caused by no relevant permissions", pvName)
 		}
 
+		// 删除 PVC
 		apiPVC, err := c.deps.KubeClientset.CoreV1().PersistentVolumeClaims(ns).Get(pvcName, metav1.GetOptions{})
 		if err != nil {
 			if errors.IsNotFound(err) {

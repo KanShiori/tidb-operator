@@ -63,6 +63,9 @@ func NewOrphanPodsCleaner(deps *controller.Dependencies) OrphanPodsCleaner {
 	}
 }
 
+// Clean 进行 Orphan Pod 的清理
+//
+// Orphan Pod 定义：属于 TiDBCluster，但是不属于任何的组件
 func (c *orphanPodsCleaner) Clean(meta metav1.Object) (map[string]string, error) {
 	ns := meta.GetNamespace()
 	skipReason := map[string]string{}
