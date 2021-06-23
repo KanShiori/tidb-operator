@@ -36,6 +36,7 @@ func NewTiFlashScaler(deps *controller.Dependencies) Scaler {
 	return &tiflashScaler{generalScaler: generalScaler{deps: deps}}
 }
 
+// Scale 缩扩容操作入口
 func (s *tiflashScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	scaling, _, _, _ := scaleOne(oldSet, newSet)
 	if scaling > 0 {
@@ -47,31 +48,37 @@ func (s *tiflashScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newS
 	return s.SyncAutoScalerAnn(meta, oldSet)
 }
 
+// ScaleOut 进行 PD 扩容操作
 func (s *tiflashScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	tc, ok := meta.(*v1alpha1.TidbCluster)
 	if !ok {
 		return nil
 	}
 
+	// 得到当前需要扩的 Pod 编号，以及扩容后的 Replica
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
 
 	klog.Infof("scaling out tiflash statefulset %s/%s, ordinal: %d (replicas: %d, delete slots: %v)", oldSet.Namespace, oldSet.Name, ordinal, replicas, deleteSlots.List())
+	// WHY? 删除一些无用的 PVC？
 	_, err := s.deleteDeferDeletingPVC(tc, v1alpha1.TiFlashMemberType, ordinal)
 	if err != nil {
 		return err
 	}
 
+	// 设置 StatefulSet 为新的副本数量
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }
 
+// ScaleIn 缩容操作
 func (s *tiflashScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	tc, ok := meta.(*v1alpha1.TidbCluster)
 	if !ok {
 		return nil
 	}
 
+	// 得到当前要缩容的 PD Pod
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 	// we can only remove one member at a time when scaling in
@@ -92,6 +99,8 @@ func (s *tiflashScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, ne
 	// 	return nil
 	// }
 
+	// TiFlash 是存储组件，要从 PD 中删除对应的 Store 记录
+	// Store 删除后就变为了 TombstoneStores
 	for _, store := range tc.Status.TiFlash.Stores {
 		if store.PodName == podName {
 			state := store.State
@@ -100,6 +109,7 @@ func (s *tiflashScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, ne
 				return err
 			}
 			if state != v1alpha1.TiKVStateOffline {
+				// 调用 PD 接口删除对应的 Store
 				if err := controller.GetPDClient(s.deps.PDControl, tc).DeleteStore(id); err != nil {
 					klog.Errorf("tiflash scale in: failed to delete store %d, %v", id, err)
 					return err
@@ -109,7 +119,10 @@ func (s *tiflashScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, ne
 			return controller.RequeueErrorf("TiFlash %s/%s store %d is still in cluster, state: %s", ns, podName, id, state)
 		}
 	}
+
+	// 遍历 TombstoneStores，删除对应的 PVC
 	for id, store := range tc.Status.TiFlash.TombstoneStores {
+		// 检查 Store 关系是否对应的上
 		if store.PodName == podName && pod.Labels[label.StoreIDLabelKey] == id {
 			id, err := strconv.ParseUint(store.ID, 10, 64)
 			if err != nil {
@@ -119,14 +132,20 @@ func (s *tiflashScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, ne
 			// TODO: double check if store is really not in Up/Offline/Down state
 			klog.Infof("TiFlash %s/%s store %d becomes tombstone", ns, podName, id)
 
+			// 标记为将删除
 			err = s.updateDeferDeletingPVC(tc, v1alpha1.TiFlashMemberType, ordinal)
 			if err != nil {
 				return err
 			}
+
+			// 变更 StatefulSet Replica 进行缩容
 			setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 			return nil
 		}
 	}
+
+	// 走到这里，说明 Pod 对应的 Store/TombstoneStores 都没有记录
+	// 那么做一些恢复操作
 
 	// When store not found in TidbCluster status, there are two situations as follows:
 	// 1. This can happen when TiFlash joins cluster but we haven't synced its status.

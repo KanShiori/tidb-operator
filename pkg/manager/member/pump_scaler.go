@@ -32,6 +32,7 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
+// pumpScaler 实现 Pump 的缩扩容操作
 type pumpScaler struct {
 	generalScaler
 }
@@ -41,6 +42,7 @@ func NewPumpScaler(deps *controller.Dependencies) *pumpScaler {
 	return &pumpScaler{generalScaler: generalScaler{deps: deps}}
 }
 
+// Scale 缩扩容操作入口
 func (s *pumpScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	scaling, _, _, _ := scaleOne(oldSet, newSet)
 	if scaling > 0 {
@@ -52,7 +54,9 @@ func (s *pumpScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 	return nil
 }
 
+// ScaleOut 进行 PD 扩容操作
 func (s *pumpScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
+	// 得到当前需要扩的 Pod 编号，以及扩容后的 Replica
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
 	obj, ok := meta.(runtime.Object)
@@ -68,6 +72,7 @@ func (s *pumpScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newS
 	default:
 		return fmt.Errorf("pump.ScaleOut, failed to convert cluster %s/%s", meta.GetNamespace(), meta.GetName())
 	}
+	// 删除新 Pod 旧的 PVC（可能之前缩容过来的），让 StatefulSet 自动创建新的
 	_, err := s.deps.PVCLister.PersistentVolumeClaims(meta.GetNamespace()).Get(pvcName)
 	if err == nil {
 		_, err = s.deleteDeferDeletingPVC(obj, v1alpha1.PumpMemberType, ordinal)
@@ -78,6 +83,7 @@ func (s *pumpScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newS
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("pump.ScaleOut, cluster %s/%s failed to fetch pvc informaiton, err:%v", meta.GetNamespace(), meta.GetName(), err)
 	}
+	// 设置 StatefulSet 为新的副本数量
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }
@@ -122,14 +128,17 @@ func pumpAdvertiseAddr(pod *v1.Pod) string {
 	return ""
 }
 
+// ScaleIn 缩容操作
 func (s *pumpScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	ns := meta.GetNamespace()
 	tcName := meta.GetName()
 
+	// 得到当前要缩容的 PD Pod
 	// we can only remove one member at a time when scaling in
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
 
+	// StatefulSet 目前处于缩扩容状态
 	// ref: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#deployment-and-scaling-guarantees
 	// Before a scaling operation is applied to a Pod, all of its predecessors must be Running and Ready.
 	//
@@ -155,6 +164,7 @@ func (s *pumpScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 
 	tc, _ := meta.(*v1alpha1.TidbCluster)
 
+	// 构建 binlog client
 	client, err := buildBinlogClient(tc, s.deps.PDControl)
 	if err != nil {
 		return err
@@ -183,6 +193,7 @@ func (s *pumpScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 
 	addr := pumpAdvertiseAddr(pod)
 
+	// 下线 Pod 对应的 Pump（通过 Addr 匹配）
 	for _, node := range tc.Status.Pump.Members {
 		if node.Host != addr {
 			continue
@@ -196,6 +207,7 @@ func (s *pumpScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 			klog.Infof("pumpScaler.ScaleIn: send offline request to pump %s/%s successfully", ns, podName)
 			return controller.RequeueErrorf("Pump %s/%s is still in cluster, state: %s", ns, podName, node.State)
 		} else if node.State == "offline" {
+			// 已经下线的点，标记将删除对应的 PVC
 			klog.Infof("Pump %s/%s becomes offline", ns, podName)
 			pvcs, err := util.ResolvePVCFromPod(pod, s.deps.PVCLister)
 			if err != nil {
@@ -212,6 +224,8 @@ func (s *pumpScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 			return controller.RequeueErrorf("Pump %s/%s is still in cluster, state: %s", ns, podName, node.State)
 		}
 	}
+
+	// 走到这里，说明 Pod 对应的 Member 不存在
 
 	// When this pump pod not found in TidbCluster status, there are two possible situations:
 	// 1. Pump has already joined cluster but status not synced yet.

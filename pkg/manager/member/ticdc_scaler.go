@@ -27,6 +27,7 @@ import (
 	"github.com/pingcap/tidb-operator/pkg/util"
 )
 
+// ticdcScaler 进行 TiCDC 的缩扩容
 type ticdcScaler struct {
 	generalScaler
 }
@@ -36,6 +37,7 @@ func NewTiCDCScaler(deps *controller.Dependencies) *ticdcScaler {
 	return &ticdcScaler{generalScaler: generalScaler{deps: deps}}
 }
 
+// Scale 缩扩容操作入口
 // Scale scales in or out of the statefulset.
 func (s *ticdcScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	scaling, _, _, _ := scaleOne(oldSet, newSet)
@@ -49,6 +51,7 @@ func (s *ticdcScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet
 
 // ScaleOut scales out of the statefulset.
 func (s *ticdcScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
+	// 得到当前需要扩的 Pod 编号，以及扩容后的 Replica
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
 	obj, ok := meta.(runtime.Object)
@@ -57,6 +60,7 @@ func (s *ticdcScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, new
 		return nil
 	}
 	klog.Infof("scaling out ticdc statefulset %s/%s, ordinal: %d (replicas: %d, delete slots: %v)", oldSet.Namespace, oldSet.Name, ordinal, replicas, deleteSlots.List())
+	// WHY? 删除一些无用的 PVC？
 	skipReason, err := s.deleteDeferDeletingPVC(obj, v1alpha1.TiCDCMemberType, ordinal)
 	if err != nil {
 		return err
@@ -64,14 +68,17 @@ func (s *ticdcScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, new
 		// wait for all PVCs to be deleted
 		return controller.RequeueErrorf("ticdc.ScaleOut, cluster %s/%s ready to scale out, skip reason %v, wait for next round", meta.GetNamespace(), meta.GetName(), skipReason)
 	}
+	// 设置 StatefulSet 为新的副本数量
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }
 
+// ScaleIn 缩容操作
 // ScaleIn scales in of the statefulset.
 func (s *ticdcScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	ns := meta.GetNamespace()
 	tcName := meta.GetName()
+	// 得到当前要缩容的 PD Pod
 	// NOW, we can only remove one member at a time when scaling in
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
@@ -93,6 +100,7 @@ func (s *ticdcScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newS
 
 	// when scaling in TiCDC pods, we let the "capture info" in PD's etcd to be deleted automatically when shutting down the TiCDC process or after TTL expired.
 
+	// 将 Pod 包含的 PVC 标记为删除
 	pvcs, err := util.ResolvePVCFromPod(pod, s.deps.PVCLister)
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("ticdcScaler.ScaleIn: failed to get pvcs for pod %s/%s in tc %s/%s, error: %s", ns, pod.Name, ns, tcName, err)
@@ -104,6 +112,7 @@ func (s *ticdcScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newS
 		}
 	}
 
+	// 设置 StatefulSet 的 ReplicaSet 进行缩容
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }

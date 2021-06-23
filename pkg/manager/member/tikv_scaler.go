@@ -32,6 +32,7 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
+// tikvScaler 负责 TiKV 的缩扩容操作
 type tikvScaler struct {
 	generalScaler
 }
@@ -41,6 +42,7 @@ func NewTiKVScaler(deps *controller.Dependencies) *tikvScaler {
 	return &tikvScaler{generalScaler: generalScaler{deps: deps}}
 }
 
+// Scale 缩扩容操作入口
 func (s *tikvScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	scaling, _, _, _ := scaleOne(oldSet, newSet)
 	if scaling > 0 {
@@ -52,7 +54,9 @@ func (s *tikvScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 	return s.SyncAutoScalerAnn(meta, oldSet)
 }
 
+// ScaleOut 进行 TiKV 扩容操作
 func (s *tikvScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
+	// 得到当前需要扩的 Pod 编号，以及扩容后的 Replica
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
 	obj, ok := meta.(runtime.Object)
@@ -60,6 +64,8 @@ func (s *tikvScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newS
 		return fmt.Errorf("cluster[%s/%s] can't conver to runtime.Object", meta.GetNamespace(), meta.GetName())
 	}
 	klog.Infof("scaling out tikv statefulset %s/%s, ordinal: %d (replicas: %d, delete slots: %v)", oldSet.Namespace, oldSet.Name, ordinal, replicas, deleteSlots.List())
+
+	// 删除对应的 PVC
 	var pvcName string
 	switch meta.(type) {
 	case *v1alpha1.TidbCluster:
@@ -69,6 +75,7 @@ func (s *tikvScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newS
 	}
 	_, err := s.deps.PVCLister.PersistentVolumeClaims(meta.GetNamespace()).Get(pvcName)
 	if err == nil {
+		// 删除新 Pod 旧的 PVC（可能之前缩容过来的），让 StatefulSet 自动创建新的
 		_, err = s.deleteDeferDeletingPVC(obj, v1alpha1.TiKVMemberType, ordinal)
 		if err != nil {
 			return err
@@ -77,14 +84,18 @@ func (s *tikvScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newS
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("tikv.ScaleOut, cluster %s/%s failed to fetch pvc informaiton, err:%v", meta.GetNamespace(), meta.GetName(), err)
 	}
+
+	// 设置 StatefulSet 为新的副本数量
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }
 
+// ScaleIn 缩容操作
 func (s *tikvScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	ns := meta.GetNamespace()
 	tcName := meta.GetName()
 	// we can only remove one member at a time when scaling in
+	// 得到当前要缩容的 PD Pod
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
 
@@ -105,15 +116,18 @@ func (s *tikvScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 
 	tc, _ := meta.(*v1alpha1.TidbCluster)
 
+	// 检查 TiKV 能否被删除
 	if pass, err := s.preCheckUpStores(tc, podName); !pass {
 		return err
 	}
 
+	// WHY? WebHook 下不需要进行实际的缩容？
 	if s.deps.CLIConfig.PodWebhookEnabled {
 		setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 		return nil
 	}
 
+	// 对应该 Pod 对应的 Store，调用  PD API 进行删除
 	// call PD API to delete the store of the TiKV Pod to be scaled in
 	for _, store := range tc.Status.TiKV.Stores {
 		if store.PodName == podName {
@@ -133,6 +147,7 @@ func (s *tikvScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 		}
 	}
 
+	// 对于 Pod Store 变为 TombstoneStore，删除对应 PVC
 	// If the store state turns to Tombstone, add defer deleting annotation to the PVCs of the Pod
 	for storeID, store := range tc.Status.TiKV.TombstoneStores {
 		if store.PodName == podName && pod.Labels[label.StoreIDLabelKey] == storeID {
@@ -149,20 +164,25 @@ func (s *tikvScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 				return fmt.Errorf("tikvScaler.ScaleIn: failed to get pvcs for pod %s/%s in tc %s/%s, error: %s", ns, pod.Name, ns, tcName, err)
 			}
 			for _, pvc := range pvcs {
+				// 标记为删除
 				if err := addDeferDeletingAnnoToPVC(tc, pvc, s.deps.PVCControl); err != nil {
 					return err
 				}
 			}
 
+			// WHAT? 停止驱逐 Leader?
 			// endEvictLeader for TombStone stores
 			if err = endEvictLeaderbyStoreID(s.deps, tc, id); err != nil {
 				return err
 			}
 
+			// 设置 StatefulSet 的 ReplicaSet 进行缩容
 			setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 			return nil
 		}
 	}
+
+	// 走到这里，说明 Pod 对应的 Store 信息不存在
 
 	// When store not found in TidbCluster status, there are two possible situations:
 	// 1. TiKV has already joined cluster but status not synced yet.

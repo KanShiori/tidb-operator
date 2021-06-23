@@ -47,10 +47,12 @@ type Scaler interface {
 	SyncAutoScalerAnn(meta metav1.Object, actual *apps.StatefulSet) error
 }
 
+// generalScaler 提供一些公共的方法
 type generalScaler struct {
 	deps *controller.Dependencies
 }
 
+// deleteDeferDeletingPVC 删除 Pod 对应的需要删除的 PVC（设置了 annotation "tidb.pingcap.com/pvc-defer-deleting"）
 // TODO: change skipReason to event recorder as in TestPDFailoverFailover
 func (s *generalScaler) deleteDeferDeletingPVC(controller runtime.Object, memberType v1alpha1.MemberType, ordinal int32) (map[string]string, error) {
 	meta := controller.(metav1.Object)
@@ -59,11 +61,17 @@ func (s *generalScaler) deleteDeferDeletingPVC(controller runtime.Object, member
 	// for unit test
 	skipReason := map[string]string{}
 
+	// 生成 Pod 对应的 PVC Label Selector
+	// like:
+	//	tidb.pingcap.com/pod-name: <tc name>-<memberType>-<ordinal>
+	//  app.kubernetes.io/name: tidb-cluster
+	// 	app.kubernetes.io/managed-by: tidb-operator
 	selector, err := GetPVCSelectorForPod(controller, memberType, ordinal)
 	if err != nil {
 		return skipReason, fmt.Errorf("%s %s/%s assemble label selector failed, err: %v", kind, ns, meta.GetName(), err)
 	}
 
+	// 得到对应的 PVC
 	pvcs, err := s.deps.PVCLister.PersistentVolumeClaims(ns).List(selector)
 	if err != nil {
 		msg := fmt.Sprintf("%s %s/%s list pvc failed, selector: %s, err: %v", kind, ns, meta.GetName(), selector, err)
@@ -77,17 +85,20 @@ func (s *generalScaler) deleteDeferDeletingPVC(controller runtime.Object, member
 		return skipReason, nil
 	}
 
+	// 遍历进行删除
 	for _, pvc := range pvcs {
 		pvcName := pvc.Name
 		if pvc.Annotations == nil {
 			skipReason[pvcName] = skipReasonScalerAnnIsNil
 			continue
 		}
+		// 确认 annation "tidb.pingcap.com/pvc-defer-deleting" 存在
 		if _, ok := pvc.Annotations[label.AnnPVCDeferDeleting]; !ok {
 			skipReason[pvcName] = skipReasonScalerAnnDeferDeletingIsEmpty
 			continue
 		}
 
+		// 删除
 		err = s.deps.PVCControl.DeletePVC(controller, pvc)
 		if err != nil {
 			klog.Errorf("Scale out: failed to delete pvc %s/%s, %v", ns, pvcName, err)
@@ -98,11 +109,13 @@ func (s *generalScaler) deleteDeferDeletingPVC(controller runtime.Object, member
 	return skipReason, nil
 }
 
+// updateDeferDeletingPVC 将 Pod 所有 PVC 标记为将删除的（设置 annotation "tidb.pingcap.com/pvc-defer-deleting"）
 func (s *generalScaler) updateDeferDeletingPVC(tc *v1alpha1.TidbCluster,
 	memberType v1alpha1.MemberType, ordinal int32) error {
 	ns := tc.GetNamespace()
 	podName := ordinalPodName(memberType, tc.Name, ordinal)
 
+	// 生成 PVC Label Selector
 	l := label.New().Instance(tc.GetInstanceName())
 	l[label.AnnPodNameKey] = podName
 	selector, err := l.Selector()
@@ -110,6 +123,7 @@ func (s *generalScaler) updateDeferDeletingPVC(tc *v1alpha1.TidbCluster,
 		return fmt.Errorf("cluster %s/%s assemble label selector failed, err: %v", ns, tc.Name, err)
 	}
 
+	// 获取所有 PVC
 	pvcs, err := s.deps.PVCLister.PersistentVolumeClaims(ns).List(selector)
 	if err != nil {
 		msg := fmt.Sprintf("Cluster %s/%s list pvc failed, selector: %s, err: %v", ns, tc.Name, selector, err)
@@ -122,6 +136,7 @@ func (s *generalScaler) updateDeferDeletingPVC(tc *v1alpha1.TidbCluster,
 		return fmt.Errorf(msg)
 	}
 
+	// 遍历一个个打上 annonation
 	for _, pvc := range pvcs {
 		pvcName := pvc.Name
 		if pvc.Annotations == nil {
@@ -169,6 +184,12 @@ func ordinalPodName(memberType v1alpha1.MemberType, tcName string, ordinal int32
 	return fmt.Sprintf("%s-%s-%d", tcName, memberType, ordinal)
 }
 
+// scaleOne 判断是缩容还是扩容
+//	* scaling 缩扩判断标记
+//	* ordinal 需要缩扩的 Pod 编号
+//  * replicas 缩扩后设置的副本数
+//  * deleteSlots
+//
 // scaleOne calculates desired replicas and delete slots from actual/desired
 // stateful sets by allowing only one pod to be deleted or created
 // it returns following values:
@@ -179,6 +200,7 @@ func ordinalPodName(memberType v1alpha1.MemberType, tcName string, ordinal int32
 // - ordinal: pod ordinal to create or delete
 // - replicas/deleteSlots: desired replicas and deleteSlots by allowing only one pod to be deleted or created
 func scaleOne(actual *apps.StatefulSet, desired *apps.StatefulSet) (scaling int, ordinal int32, replicas int32, deleteSlots sets.Int32) {
+	// 对比当前与启动的 Pod 数量
 	actualPodOrdinals := helper.GetPodOrdinals(*actual.Spec.Replicas, actual)
 	desiredPodOrdinals := helper.GetPodOrdinals(*desired.Spec.Replicas, desired)
 	additions := desiredPodOrdinals.Difference(actualPodOrdinals)

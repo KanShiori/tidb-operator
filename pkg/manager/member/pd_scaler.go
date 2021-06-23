@@ -28,6 +28,7 @@ import (
 
 // TODO add e2e test specs
 
+// pdScaler 负责 PD 的缩扩容的业务层逻辑
 type pdScaler struct {
 	generalScaler
 }
@@ -37,6 +38,7 @@ func NewPDScaler(deps *controller.Dependencies) Scaler {
 	return &pdScaler{generalScaler: generalScaler{deps: deps}}
 }
 
+// Scale 缩扩容操作入口
 func (s *pdScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	scaling, _, _, _ := scaleOne(oldSet, newSet)
 	if scaling > 0 {
@@ -47,18 +49,23 @@ func (s *pdScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet *a
 	return s.SyncAutoScalerAnn(meta, oldSet)
 }
 
+// ScaleOut 进行扩容操作
+//
+// 仅仅修改了 newSet 的 Replica 数量，后续继续的 Sync 操作会进行 StatefulSet 的更新
 func (s *pdScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	tc, ok := meta.(*v1alpha1.TidbCluster)
 	if !ok {
 		return nil
 	}
 
+	// 得到当前需要扩的 Pod 编号，以及扩容后的 Replica
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
 	klog.Infof("scaling out pd statefulset %s/%s, ordinal: %d (replicas: %d, delete slots: %v)", oldSet.Namespace, oldSet.Name, ordinal, replicas, deleteSlots.List())
+	// 删除新 Pod 旧的 PVC（可能之前缩容过来的），让 StatefulSet 自动创建新的
 	_, err := s.deleteDeferDeletingPVC(tc, v1alpha1.PDMemberType, ordinal)
 	if err != nil {
 		return err
@@ -68,10 +75,13 @@ func (s *pdScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newSet
 		return fmt.Errorf("TidbCluster: %s/%s's pd status sync failed, can't scale out now", ns, tcName)
 	}
 
+	// 设置 StatefulSet 为新的副本数量
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }
 
+// ScaleIn 缩容操作
+//
 // We need remove member from cluster before reducing statefulset replicas
 // only remove one member at a time when scale down
 func (s *pdScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
@@ -80,6 +90,7 @@ func (s *pdScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 		return nil
 	}
 
+	// 得到当前要缩容的 PD Pod
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
@@ -93,11 +104,14 @@ func (s *pdScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 
 	klog.Infof("scaling in pd statefulset %s/%s, ordinal: %d (replicas: %d, delete slots: %v)", oldSet.Namespace, oldSet.Name, ordinal, replicas, deleteSlots.List())
 
+	// WHY? WebHook 下不需要进行实际的缩容？
 	if s.deps.CLIConfig.PodWebhookEnabled {
 		setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 		return nil
 	}
 
+	// 检查是否允许缩容
+	// Pod 缩容为 0，但是其他组件还存在，那么就不允许缩容
 	// limit scale in when multi-cluster is enabled
 	if pass := s.preCheckUpMembers(tc, pdPodName); !pass {
 		return nil
@@ -112,6 +126,7 @@ func (s *pdScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 	// If the PD StatefulSet would be scale-in to zero and no other members in the PD cluster,
 	// we would directly delete the member without the leader transferring
 	if leader.Name == memberName || leader.Name == pdPodName {
+		// 如果当前要缩容的是 PD Leader，进行 transfer
 		if *newSet.Spec.Replicas > 1 {
 			minOrdinal := helper.GetMinPodOrdinal(*newSet.Spec.Replicas, newSet)
 			targetOrdinal := helper.GetMaxPodOrdinal(*newSet.Spec.Replicas, newSet)
@@ -128,6 +143,7 @@ func (s *pdScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 				return err
 			}
 		} else {
+			// 缩容到 0，将其 transfer 到异构集群的 PD
 			for _, member := range tc.Status.PD.PeerMembers {
 				if member.Health && member.Name != memberName {
 					err = pdClient.TransferPDLeader(member.Name)
@@ -140,6 +156,7 @@ func (s *pdScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 		}
 	}
 
+	// PD 侧删除
 	err = pdClient.DeleteMember(memberName)
 	if err != nil {
 		klog.Errorf("pdScaler.ScaleIn: failed to delete member %s, %v", memberName, err)
@@ -157,12 +174,14 @@ func (s *pdScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 		return fmt.Errorf("pdScaler.ScaleIn: failed to get pvcs for pod %s/%s in tc %s/%s, error: %s", ns, pod.Name, ns, tcName, err)
 	}
 
+	// 将 Pod 包含的 PVC 标记为删除
 	for _, pvc := range pvcs {
 		if err := addDeferDeletingAnnoToPVC(tc, pvc, s.deps.PVCControl); err != nil {
 			return err
 		}
 	}
 
+	// 设置 StatefulSet 的 ReplicaSet 进行缩容
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }

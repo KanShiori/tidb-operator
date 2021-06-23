@@ -27,6 +27,7 @@ import (
 	"github.com/pingcap/tidb-operator/pkg/util"
 )
 
+// tidbScaler 负责 TiDB 的缩扩容的业务层逻辑
 type tidbScaler struct {
 	generalScaler
 }
@@ -36,6 +37,7 @@ func NewTiDBScaler(deps *controller.Dependencies) *tidbScaler {
 	return &tidbScaler{generalScaler: generalScaler{deps: deps}}
 }
 
+// Scale 缩扩容操作入口
 // Scale scales in or out of the statefulset.
 func (s *tidbScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	scaling, _, _, _ := scaleOne(oldSet, newSet)
@@ -47,8 +49,10 @@ func (s *tidbScaler) Scale(meta metav1.Object, oldSet *apps.StatefulSet, newSet 
 	return nil
 }
 
+// ScaleOut 进行扩容操作
 // ScaleOut scales out of the statefulset.
 func (s *tidbScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
+	// 得到当前需要扩的 Pod 编号，以及扩容后的 Replica
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
 	obj, ok := meta.(runtime.Object)
@@ -57,6 +61,7 @@ func (s *tidbScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newS
 		return nil
 	}
 	klog.Infof("scaling out tidb statefulset %s/%s, ordinal: %d (replicas: %d, delete slots: %v)", oldSet.Namespace, oldSet.Name, ordinal, replicas, deleteSlots.List())
+	// 删除新 Pod 旧的 PVC（可能之前缩容过来的），让 StatefulSet 自动创建新的
 	skipReason, err := s.deleteDeferDeletingPVC(obj, v1alpha1.TiDBMemberType, ordinal)
 	if err != nil {
 		return err
@@ -64,14 +69,17 @@ func (s *tidbScaler) ScaleOut(meta metav1.Object, oldSet *apps.StatefulSet, newS
 		// wait for all PVCs to be deleted
 		return controller.RequeueErrorf("tidbScaler.ScaleOut, cluster %s/%s ready to scale out, skip reason %v, wait for next round", meta.GetNamespace(), meta.GetName(), skipReason)
 	}
+	// 设置 StatefulSet 为新的副本数量
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }
 
+// ScaleIn 缩容操作
 // ScaleIn scales in of the statefulset.
 func (s *tidbScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	ns := meta.GetNamespace()
 	tcName := meta.GetName()
+	// 得到当前要缩容的 PD Pod
 	// NOW, we can only remove one member at a time when scaling in
 	_, ordinal, replicas, deleteSlots := scaleOne(oldSet, newSet)
 	resetReplicas(newSet, oldSet)
@@ -91,6 +99,7 @@ func (s *tidbScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 		return fmt.Errorf("tidbScaler.ScaleIn: failed to get pods %s for cluster %s/%s, error: %s", podName, ns, tcName, err)
 	}
 
+	// 将 Pod 包含的 PVC 标记为删除
 	pvcs, err := util.ResolvePVCFromPod(pod, s.deps.PVCLister)
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("tidbScaler.ScaleIn: failed to get pvcs for pod %s/%s in tc %s/%s, error: %s", ns, pod.Name, ns, tcName, err)
@@ -102,6 +111,7 @@ func (s *tidbScaler) ScaleIn(meta metav1.Object, oldSet *apps.StatefulSet, newSe
 		}
 	}
 
+	// 设置 StatefulSet 的 ReplicaSet 进行缩容
 	setReplicasAndDeleteSlots(newSet, replicas, deleteSlots)
 	return nil
 }
