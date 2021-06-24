@@ -253,6 +253,7 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 	}
 
 	// 业务上的升级
+	// 条件：判断前后 Pod Template 是否有变化（主要是 Image？） || 或者 PD 已经处于升级阶段
 	if !templateEqual(newPDSet, oldPDSet) || tc.Status.PD.Phase == v1alpha1.UpgradePhase {
 		if err := m.upgrader.Upgrade(tc, oldPDSet, newPDSet); err != nil {
 			return err

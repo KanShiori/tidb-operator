@@ -425,6 +425,7 @@ func StatefulSetEqual(new apps.StatefulSet, old apps.StatefulSet) bool {
 	return false
 }
 
+// ResolvePVCFromPod 解析 Pod 的 Volume，返回对应的 PVC
 // ResolvePVCFromPod parses pod volumes definition, and returns all PVCs mounted by this pod
 //
 // If the Pod don't have any PVC, return error 'NotFound'.

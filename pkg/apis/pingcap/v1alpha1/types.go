@@ -1070,6 +1070,7 @@ type TiDBFailureMember struct {
 
 // TiKVStatus is TiKV status
 type TiKVStatus struct {
+	// 本次 Sync Status 收集成功
 	Synced          bool                        `json:"synced,omitempty"`
 	Phase           MemberPhase                 `json:"phase,omitempty"`
 	BootStrapped    bool                        `json:"bootStrapped,omitempty"`

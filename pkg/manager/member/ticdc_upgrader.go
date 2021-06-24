@@ -23,6 +23,7 @@ import (
 	"k8s.io/klog"
 )
 
+// ticdcUpgrader 实现业务层 TiCDC 的升级
 type ticdcUpgrader struct {
 	deps *controller.Dependencies
 }
@@ -35,7 +36,7 @@ func NewTiCDCUpgrader(deps *controller.Dependencies) Upgrader {
 }
 
 func (u *ticdcUpgrader) Upgrade(tc *v1alpha1.TidbCluster, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
-
+	// TiCDC 副本为 0，还要啥升级
 	// return nil when scale replicas to 0
 	if tc.Spec.TiCDC.Replicas == int32(0) {
 		return nil
@@ -44,7 +45,9 @@ func (u *ticdcUpgrader) Upgrade(tc *v1alpha1.TidbCluster, oldSet *apps.StatefulS
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// WHY? 为什么先设置 Phase，然后检查前后版本？
 	tc.Status.TiCDC.Phase = v1alpha1.UpgradePhase
+
 	if !templateEqual(newSet, oldSet) {
 		return nil
 	}
@@ -63,7 +66,12 @@ func (u *ticdcUpgrader) Upgrade(tc *v1alpha1.TidbCluster, oldSet *apps.StatefulS
 		return nil
 	}
 
+	// 设置 StatefulSet Partition，默认不继续 Pod 升级
+	// 当下面执行完升级后会减小 Partition
 	setUpgradePartition(newSet, *oldSet.Spec.UpdateStrategy.RollingUpdate.Partition)
+
+	// List 所有的 Pod，从大到小判断版本是否一致，是否需要进行升级
+	// TiCDC 升级过程不需要进行业务上的操作，仅仅是检查已升级的 TiCDC 是否还健康
 	podOrdinals := helper.GetPodOrdinals(*oldSet.Spec.Replicas, oldSet).List()
 	for _i := len(podOrdinals) - 1; _i >= 0; _i-- {
 		i := podOrdinals[_i]
@@ -78,11 +86,14 @@ func (u *ticdcUpgrader) Upgrade(tc *v1alpha1.TidbCluster, oldSet *apps.StatefulS
 		}
 
 		if revision == tc.Status.TiCDC.StatefulSet.UpdateRevision {
+			// 已升级的 TiCDC 异常，中断升级流程
 			if _, exist := tc.Status.TiCDC.Captures[podName]; !exist {
 				return controller.RequeueErrorf("tidbcluster: [%s/%s]'s ticdc upgraded pod: [%s] is not ready", ns, tcName, podName)
 			}
 			continue
 		}
+
+		// 减小 Partition
 		setUpgradePartition(newSet, i)
 		return nil
 	}

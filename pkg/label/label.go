@@ -79,6 +79,7 @@ const (
 	AnnFailTiDBScheduler string = "tidb.pingcap.com/fail-scheduler"
 	// AnnPodNameKey is pod name annotation key used in PV/PVC for synchronizing tidb cluster meta info
 	AnnPodNameKey string = "tidb.pingcap.com/pod-name"
+	// AnnPVCDeferDeleting 表明该 PVC 应该被删除
 	// AnnPVCDeferDeleting is pvc defer deletion annotation key used in PVC for defer deleting PVC
 	AnnPVCDeferDeleting = "tidb.pingcap.com/pvc-defer-deleting"
 	// AnnPVCPodScheduling is pod scheduling annotation key, it represents whether the pod is scheduling

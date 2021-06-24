@@ -178,6 +178,9 @@ func (c *defaultTidbClusterControl) updateTidbCluster(tc *v1alpha1.TidbCluster) 
 		return err
 	}
 
+	// 以下核心组件的顺序为升级的顺序
+	// 因为后面的组件会通过判断前面组件的 <Component>.phase == Upgrade 来判断是否需要升级
+
 	// 协调处理 TiCDC
 	//   - waiting for the pd cluster available(pd cluster is in quorum)
 	//   - create or update ticdc deployment

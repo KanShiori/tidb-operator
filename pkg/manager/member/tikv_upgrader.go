@@ -38,6 +38,7 @@ type TiKVUpgrader interface {
 	Upgrade(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error
 }
 
+// tikvUpgrader 实现 TiKV 升级的操作
 type tikvUpgrader struct {
 	deps *controller.Dependencies
 }
@@ -49,10 +50,12 @@ func NewTiKVUpgrader(deps *controller.Dependencies) TiKVUpgrader {
 	}
 }
 
+// Upgrade 进行业务层的升级操作
 func (u *tikvUpgrader) Upgrade(meta metav1.Object, oldSet *apps.StatefulSet, newSet *apps.StatefulSet) error {
 	ns := meta.GetNamespace()
 	tcName := meta.GetName()
 
+	// 等待其他组件升级成功，并且自身不能处于 Scaling 阶段
 	var status *v1alpha1.TiKVStatus
 	switch meta := meta.(type) {
 	case *v1alpha1.TidbCluster:
@@ -79,6 +82,7 @@ func (u *tikvUpgrader) Upgrade(meta metav1.Object, oldSet *apps.StatefulSet, new
 
 	tc, _ := meta.(*v1alpha1.TidbCluster)
 
+	// status 是同步的
 	if !status.Synced {
 		return fmt.Errorf("cluster: [%s/%s]'s tikv status sync failed, can not to be upgraded", ns, tcName)
 	}
@@ -102,7 +106,11 @@ func (u *tikvUpgrader) Upgrade(meta metav1.Object, oldSet *apps.StatefulSet, new
 		return nil
 	}
 
+	// 设置 StatefulSet Partition，默认不继续 Pod 升级
+	// 当下面 upgradeTiKVPod 成功后会减小 Partition
 	setUpgradePartition(newSet, *oldSet.Spec.UpdateStrategy.RollingUpdate.Partition)
+
+	// List 所有的 Pod，从大到小判断版本是否一致，是否需要进行升级
 	podOrdinals := helper.GetPodOrdinals(*oldSet.Spec.Replicas, oldSet).List()
 	for _i := len(podOrdinals) - 1; _i >= 0; _i-- {
 		i := podOrdinals[_i]
@@ -121,8 +129,9 @@ func (u *tikvUpgrader) Upgrade(meta metav1.Object, oldSet *apps.StatefulSet, new
 			return controller.RequeueErrorf("tidbcluster: [%s/%s]'s tikv pod: [%s] has no label: %s", ns, tcName, podName, apps.ControllerRevisionHashLabelKey)
 		}
 
+		// 当前版本与需要升级 Revision 相同，说明 Pod 已经升级
 		if revision == status.StatefulSet.UpdateRevision {
-
+			// 检查 TiKV 是否存在并且是否 health，如果已经升级的 Pod 异常，那么不继续进行升级
 			if !podutil.IsPodReady(pod) {
 				return controller.RequeueErrorf("tidbcluster: [%s/%s]'s upgraded tikv pod: [%s] is not ready", ns, tcName, podName)
 			}
@@ -144,17 +153,20 @@ func (u *tikvUpgrader) Upgrade(meta metav1.Object, oldSet *apps.StatefulSet, new
 			continue
 		}
 
+		// WHAT? Webhook 为啥不需要升级了
 		if u.deps.CLIConfig.PodWebhookEnabled {
 			setUpgradePartition(newSet, i)
 			return nil
 		}
 
+		// 处理 Pod i 的升级
 		return u.upgradeTiKVPod(tc, i, newSet)
 	}
 
 	return nil
 }
 
+// upgradeTiKVPod 进行某个 Pod 的业务上的升级
 func (u *tikvUpgrader) upgradeTiKVPod(tc *v1alpha1.TidbCluster, ordinal int32, newSet *apps.StatefulSet) error {
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
@@ -164,6 +176,7 @@ func (u *tikvUpgrader) upgradeTiKVPod(tc *v1alpha1.TidbCluster, ordinal int32, n
 		return fmt.Errorf("upgradeTiKVPod: failed to get pods %s for cluster %s/%s, error: %s", upgradePodName, ns, tcName, err)
 	}
 
+	// Pod 对应 Store 需要进行 Leader 转移
 	for _, store := range tc.Status.TiKV.Stores {
 		if store.PodName == upgradePodName {
 			storeID, err := strconv.ParseUint(store.ID, 10, 64)

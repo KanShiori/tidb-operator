@@ -24,6 +24,7 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
+// tiflashUpgrader 负责 TiFlash 的升级
 type tiflashUpgrader struct {
 	deps *controller.Dependencies
 }
@@ -39,6 +40,7 @@ func (u *tiflashUpgrader) Upgrade(tc *v1alpha1.TidbCluster, oldSet *apps.Statefu
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 等待 TiCDC 升级完成 OR 缩扩容完成
 	if tc.Status.TiCDC.Phase == v1alpha1.UpgradePhase ||
 		tc.TiFlashScaling() {
 		klog.Infof("TidbCluster: [%s/%s]'s ticdc status is %s, "+
@@ -75,6 +77,8 @@ func (u *tiflashUpgrader) Upgrade(tc *v1alpha1.TidbCluster, oldSet *apps.Statefu
 		return nil
 	}
 
+	// 设置 StatefulSet Partition，默认不继续 Pod 升级
+	// 当下面检查成功后会减小 Partition
 	setUpgradePartition(newSet, *oldSet.Spec.UpdateStrategy.RollingUpdate.Partition)
 	podOrdinals := helper.GetPodOrdinals(*oldSet.Spec.Replicas, oldSet).List()
 	for _i := len(podOrdinals) - 1; _i >= 0; _i-- {
@@ -95,9 +99,11 @@ func (u *tiflashUpgrader) Upgrade(tc *v1alpha1.TidbCluster, oldSet *apps.Statefu
 		}
 
 		if revision == tc.Status.TiFlash.StatefulSet.UpdateRevision {
+			// 检查已经升级的 TiFlash 是否 Ready
 			if !podutil.IsPodReady(pod) {
 				return controller.RequeueErrorf("tidbcluster: [%s/%s]'s upgraded TiFlash pod: [%s] is not ready", ns, tcName, podName)
 			}
+			// 检查 TiFlash Store State 为 Up
 			if store.State != v1alpha1.TiKVStateUp {
 				return controller.RequeueErrorf("tidbcluster: [%s/%s]'s upgraded TiFlash pod: [%s], store state is not UP", ns, tcName, podName)
 			}
