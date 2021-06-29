@@ -178,6 +178,13 @@ func main() {
 		}
 
 		// 初始化所有 CR Controller
+		//  + TiDBCluster Controller 管理 TiDBCluster 资源
+		//  + DMCluster Controller 管理 DMCluster 资源
+		//  + Backup Controller 管理 Backup 资源
+		//  + Restore Controller 管理 Restore 资源
+		//  + Backup Schedule Controller 管理 BackupSchedule 资源
+		//  + TiDBInitialize Controller 管理 TiDBInitialize 资源
+		//  + TiDBMonitor Controller 管理 TiDBMonitor 资源
 		// Initialize all controllers
 		controllers := []Controller{
 			tidbcluster.NewController(deps),

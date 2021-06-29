@@ -300,6 +300,7 @@ func (m *pdMemberManager) shouldRecover(tc *v1alpha1.TidbCluster) bool {
 	return true
 }
 
+// syncTidbClusterStatus 收集所有 PD 示例的信息
 func (m *pdMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, set *apps.StatefulSet) error {
 	if set == nil {
 		// skip if not created yet
@@ -316,6 +317,7 @@ func (m *pdMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, set *a
 		return err
 	}
 
+	// 更新阶段
 	// Scaling takes precedence over upgrading.
 	if tc.PDStsDesiredReplicas() != *set.Spec.Replicas {
 		tc.Status.PD.Phase = v1alpha1.ScalePhase

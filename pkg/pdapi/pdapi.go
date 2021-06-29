@@ -244,6 +244,7 @@ type schedulerInfo struct {
 	StoreID uint64 `json:"store_id"`
 }
 
+// 调用
 func (c *pdClient) GetHealth() (*HealthInfo, error) {
 	apiURL := fmt.Sprintf("%s/%s", c.url, healthPrefix)
 	body, err := httputil.GetBodyOK(c.httpClient, apiURL)

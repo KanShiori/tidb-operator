@@ -55,6 +55,13 @@ func (u *tidbClusterConditionUpdater) updateReadyCondition(tc *v1alpha1.TidbClus
 	reason := ""
 	message := ""
 
+	// 依次检查各个组件是否正常
+	//  1. PD TiKV TiDB TiFlash 的 StatefulSet 是否正在运行（不是升级流程）
+	//  2. PD 所有 member 正常运行（都是 health 的）
+	//  3. TiKV 所有 Store 是 Up 状态
+	//  4. TiDB 所有 member 是 health 的
+	//  5. Tiflash 所有 Store 都是 Ready 的
+	// 其中一个不正常，那么 Ready 就是 False
 	switch {
 	case !allStatefulSetsAreUpToDate(tc):
 		reason = utiltidbcluster.StatfulSetNotUpToDate

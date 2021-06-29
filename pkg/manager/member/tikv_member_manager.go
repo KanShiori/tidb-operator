@@ -694,12 +694,15 @@ func (m *tikvMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, set 
 		// skip if not created yet
 		return nil
 	}
+
+	// StatefulSet 信息
 	tc.Status.TiKV.StatefulSet = &set.Status
 	upgrading, err := m.statefulSetIsUpgradingFn(m.deps.PodLister, m.deps.PDControl, set, tc)
 	if err != nil {
 		return err
 	}
 
+	// 升级成功，停止 evict Leader
 	// If phase changes from UpgradePhase to NormalPhase, try to endEvictLeader for the last store.
 	if !upgrading && tc.Status.TiKV.Phase == v1alpha1.UpgradePhase {
 		if err = endEvictLeader(m.deps, tc, helper.GetMinPodOrdinal(*set.Spec.Replicas, set)); err != nil {
@@ -707,6 +710,7 @@ func (m *tikvMemberManager) syncTidbClusterStatus(tc *v1alpha1.TidbCluster, set 
 		}
 	}
 
+	// 更新 phase
 	// Scaling takes precedence over upgrading.
 	if tc.TiKVStsDesiredReplicas() != *set.Spec.Replicas {
 		tc.Status.TiKV.Phase = v1alpha1.ScalePhase

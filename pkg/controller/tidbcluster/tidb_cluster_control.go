@@ -116,6 +116,7 @@ func (c *defaultTidbClusterControl) UpdateTidbCluster(tc *v1alpha1.TidbCluster) 
 	}
 
 	// 根据更新后的 status 更新 TC 的 condition
+	// TC 的 Condition 决定了决定了展示的 TC 是否是 Ready
 	if err := c.conditionUpdater.Update(tc); err != nil {
 		errs = append(errs, err)
 	}
