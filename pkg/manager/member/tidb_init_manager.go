@@ -48,6 +48,7 @@ const (
 	initStartKey        = "init-start-script"
 )
 
+// InitManager 实现了管理 TiDBInitializer 的逻辑
 // InitManager implements the logic for syncing TidbInitializer.
 type InitManager interface {
 	// Sync	implements the logic for syncing TidbInitializer.
@@ -66,6 +67,7 @@ func NewTiDBInitManager(deps *controller.Dependencies) InitManager {
 func (m *tidbInitManager) Sync(ti *v1alpha1.TidbInitializer) error {
 	ns := ti.Namespace
 	tcName := ti.Spec.Clusters.Name
+	// 检查同 namespace TiDBCluster 是否存在
 	tc, err := m.deps.TiDBClusterLister.TidbClusters(ns).Get(tcName)
 	if err != nil {
 		return fmt.Errorf("TidbInitManager.Sync: failed to get tidbcluster %s for TidbInitializer %s/%s, error: %s", tcName, ns, ti.Name, err)
@@ -75,18 +77,23 @@ func (m *tidbInitManager) Sync(ti *v1alpha1.TidbInitializer) error {
 		return nil
 	}
 
+	// 协调 Configmap
 	err = m.syncTiDBInitConfigMap(ti)
 	if err != nil {
 		return err
 	}
+	// 协调 Job
 	err = m.syncTiDBInitJob(ti)
 	if err != nil {
 		return err
 	}
+
+	// 收集 status， 更新 TiDBInitializeer CR 对象
 	return m.updateStatus(ti.DeepCopy())
 }
 
 func (m *tidbInitManager) updateStatus(ti *v1alpha1.TidbInitializer) error {
+	// 得到对应 Job
 	name := controller.TiDBInitializerMemberName(ti.Spec.Clusters.Name)
 	ns := ti.Namespace
 	job, err := m.deps.JobLister.Jobs(ns).Get(name)
@@ -94,6 +101,7 @@ func (m *tidbInitManager) updateStatus(ti *v1alpha1.TidbInitializer) error {
 		return fmt.Errorf("updateStatus: failed to get job %s for TidbInitializer %s/%s, error: %s", name, ns, ti.Name, err)
 	}
 
+	// 更新 status 相关字段
 	phase := v1alpha1.InitializePhaseRunning
 	if len(job.Status.Conditions) > 0 {
 		for _, c := range job.Status.Conditions {
@@ -118,6 +126,7 @@ func (m *tidbInitManager) updateStatus(ti *v1alpha1.TidbInitializer) error {
 		update = true
 	}
 	if update {
+		// 真正的更新
 		_, err = m.updateInitializer(ti)
 		return err
 	}
@@ -163,6 +172,7 @@ func (m *tidbInitManager) syncTiDBInitConfigMap(ti *v1alpha1.TidbInitializer) er
 	cm := &corev1.ConfigMap{}
 	tcName := ti.Spec.Clusters.Name
 
+	// 检查 TiDB Initializer ConfigMap 对象是否存在
 	exist, err := m.deps.TypedControl.Exist(client.ObjectKey{
 		Namespace: ns,
 		Name:      name,
@@ -174,11 +184,13 @@ func (m *tidbInitManager) syncTiDBInitConfigMap(ti *v1alpha1.TidbInitializer) er
 		return nil
 	}
 
+	// 读取 TiDBCluster
 	tc, err := m.deps.TiDBClusterLister.TidbClusters(ns).Get(tcName)
 	if err != nil {
 		return fmt.Errorf("syncTiDBInitConfigMap: failed to get tidbcluster %s for TidbInitializer %s/%s, error: %s", tcName, ns, ti.Name, err)
 	}
 
+	// 构建 ConfigMap
 	tlsClientEnabled := false
 	if tc.Spec.TiDB.IsTLSClientEnabled() && !tc.SkipTLSWhenConnectTiDB() {
 		tlsClientEnabled = true
@@ -188,6 +200,7 @@ func (m *tidbInitManager) syncTiDBInitConfigMap(ti *v1alpha1.TidbInitializer) er
 		return err
 	}
 
+	// 创建 ConfigMap
 	err = m.deps.TypedControl.Create(ti, newCm)
 	if errors.IsAlreadyExists(err) {
 		klog.Infof("Configmap %s/%s already exists", newCm.Namespace, newCm.Name)
@@ -210,11 +223,13 @@ func (m *tidbInitManager) syncTiDBInitJob(ti *v1alpha1.TidbInitializer) error {
 		return fmt.Errorf("TiDBInitializer %s/%s get job %s failed, err: %v", ns, ti.Name, name, err)
 	}
 
+	// 构建 Job
 	job, err := m.makeTiDBInitJob(ti)
 	if err != nil {
 		return err
 	}
 
+	// 创建 Job
 	err = m.deps.TypedControl.Create(ti, job)
 	if errors.IsAlreadyExists(err) {
 		klog.Infof("Job %s/%s already exists", job.Namespace, job.Name)
@@ -406,6 +421,7 @@ func (m *tidbInitManager) makeTiDBInitJob(ti *v1alpha1.TidbInitializer) (*batchv
 	return job, nil
 }
 
+// getTiDBInitConfigMap 构建 TiDBInitializer 对应的 ConfigMap
 func getTiDBInitConfigMap(ti *v1alpha1.TidbInitializer, tlsClientEnabled bool) (*corev1.ConfigMap, error) {
 	var initSQL, passwdSet bool
 
