@@ -109,6 +109,7 @@ func (c *Controller) processNextWorkItem() bool {
 	return true
 }
 
+// sync 进行 Backup 资源的协调
 // sync syncs the given backup.
 func (c *Controller) sync(key string) error {
 	startTime := time.Now()

@@ -52,6 +52,7 @@ func NewController(deps *controller.Dependencies) *Controller {
 		),
 	}
 
+	// 通过 Informer 监控 Restore CR 对象
 	restoreInformer := deps.InformerFactory.Pingcap().V1alpha1().Restores()
 	restoreInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: c.updateRestore,
@@ -63,6 +64,7 @@ func NewController(deps *controller.Dependencies) *Controller {
 	return c
 }
 
+// Run BackupController 启动
 // Run runs the restore controller.
 func (c *Controller) Run(workers int, stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
@@ -84,6 +86,7 @@ func (c *Controller) worker() {
 	}
 }
 
+// processNextWorkItem 从 Queue 中取出 key，执行 sync 函数
 // processNextWorkItem dequeues items, processes them, and marks them done. It enforces that the syncHandler is never
 // invoked concurrently with the same key.
 func (c *Controller) processNextWorkItem() bool {
@@ -135,27 +138,33 @@ func (c *Controller) syncRestore(tc *v1alpha1.Restore) error {
 	return c.control.UpdateRestore(tc)
 }
 
+// updateRestore Add 与 Update 回调都会调用 updateRestore
 func (c *Controller) updateRestore(cur interface{}) {
 	newRestore := cur.(*v1alpha1.Restore)
 	ns := newRestore.GetNamespace()
 	name := newRestore.GetName()
 
+	// 检查 Restore Condition 是否是 Invaild
 	if v1alpha1.IsRestoreInvalid(newRestore) {
 		klog.V(4).Infof("restore %s/%s is Invalid, skipping.", ns, name)
 		return
 	}
 
+	// 检查 Restore Condition 是否是 Completed
 	if v1alpha1.IsRestoreComplete(newRestore) {
 		klog.V(4).Infof("restore %s/%s is Complete, skipping.", ns, name)
 		return
 	}
 
+	// 检查 Restore Condition 是否是 Failed
 	if v1alpha1.IsRestoreFailed(newRestore) {
 		klog.V(4).Infof("restore %s/%s is Failed, skipping.", ns, name)
 		return
 	}
 
+	// 检查 Restore Condition 被调度或者运行过
 	if v1alpha1.IsRestoreScheduled(newRestore) || v1alpha1.IsRestoreRunning(newRestore) {
+		// 检查对应的 Pod 是否运行结束
 		selector, err := label.NewRestore().Instance(newRestore.GetInstanceName()).RestoreJob().Restore(name).Selector()
 		if err != nil {
 			klog.Errorf("Fail to generate selector for restore %s/%s, %v", ns, name, err)
@@ -185,6 +194,7 @@ func (c *Controller) updateRestore(cur interface{}) {
 		return
 	}
 
+	// 都不是，说明 Restore 是新添加的
 	klog.V(4).Infof("restore object %s/%s enqueue", ns, name)
 	c.enqueueRestore(newRestore)
 }

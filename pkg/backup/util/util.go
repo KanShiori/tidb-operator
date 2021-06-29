@@ -364,6 +364,7 @@ func ValidateBackup(backup *v1alpha1.Backup, tikvImage string) error {
 	name := backup.Name
 
 	if backup.Spec.BR == nil {
+		// 
 		if reason := validateAccessConfig(backup.Spec.From); reason != "" {
 			return fmt.Errorf(reason, ns, name)
 		}
@@ -371,6 +372,7 @@ func ValidateBackup(backup *v1alpha1.Backup, tikvImage string) error {
 			return fmt.Errorf("missing StorageSize config in spec of %s/%s", ns, name)
 		}
 	} else {
+		// 版本兼容
 		if !canSkipSetGCLifeTime(tikvImage) {
 			if reason := validateAccessConfig(backup.Spec.From); reason != "" {
 				return fmt.Errorf(reason, ns, name)

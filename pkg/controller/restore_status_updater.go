@@ -40,6 +40,7 @@ type RestoreUpdateStatus struct {
 	CommitTs *string
 }
 
+// RestoreConditionUpdaterInterface 用于更新 Restore CR 的 Condition
 // RestoreConditionUpdaterInterface enables updating Restore conditions.
 type RestoreConditionUpdaterInterface interface {
 	Update(restore *v1alpha1.Restore, condition *v1alpha1.RestoreCondition, newStatus *RestoreUpdateStatus) error
@@ -63,6 +64,7 @@ func NewRealRestoreConditionUpdater(
 	}
 }
 
+// Update 更新 Restore 的某个状态
 func (u *realRestoreConditionUpdater) Update(restore *v1alpha1.Restore, condition *v1alpha1.RestoreCondition, newStatus *RestoreUpdateStatus) error {
 	ns := restore.GetNamespace()
 	restoreName := restore.GetName()

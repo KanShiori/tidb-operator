@@ -32,6 +32,7 @@ import (
 	"k8s.io/utils/pointer"
 )
 
+// backupManager 负责管理 Backup CR
 type backupManager struct {
 	deps          *controller.Dependencies
 	backupCleaner BackupCleaner
@@ -49,6 +50,7 @@ func NewBackupManager(deps *controller.Dependencies) backup.BackupManager {
 }
 
 func (bm *backupManager) Sync(backup *v1alpha1.Backup) error {
+	// 执行清理行为
 	// because a finalizer is installed on the backup on creation, when backup is deleted,
 	// backup.DeletionTimestamp will be set, controller will be informed with an onUpdate event,
 	// this is the moment that we can do clean up work.
@@ -75,8 +77,10 @@ func (bm *backupManager) syncBackupJob(backup *v1alpha1.Backup) error {
 
 	var err error
 	if backup.Spec.BR == nil {
+		// 不使用 BR，仅仅检查
 		err = backuputil.ValidateBackup(backup, "")
 	} else {
+		// 使用 BR，需要得到 TiKV 的版本，用于兼容性检查
 		backupNamespace := backup.GetNamespace()
 		if backup.Spec.BR.ClusterNamespace != "" {
 			backupNamespace = backup.Spec.BR.ClusterNamespace
@@ -99,6 +103,7 @@ func (bm *backupManager) syncBackupJob(backup *v1alpha1.Backup) error {
 		err = backuputil.ValidateBackup(backup, tikvImage)
 	}
 
+	// 检查结果为失败，那么更新 Backup status.conditions
 	if err != nil {
 		bm.statusUpdater.Update(backup, &v1alpha1.BackupCondition{
 			Type:    v1alpha1.BackupInvalid,
@@ -110,6 +115,7 @@ func (bm *backupManager) syncBackupJob(backup *v1alpha1.Backup) error {
 		return controller.IgnoreErrorf("invalid backup spec %s/%s cause %s", ns, name, err.Error())
 	}
 
+	// 检查对应的 Job
 	_, err = bm.deps.JobLister.Jobs(ns).Get(backupJobName)
 	if err == nil {
 		// already have a backup job running，return directly
@@ -120,9 +126,12 @@ func (bm *backupManager) syncBackupJob(backup *v1alpha1.Backup) error {
 		return fmt.Errorf("backup %s/%s get job %s failed, err: %v", ns, name, backupJobName, err)
 	}
 
+	// 创建对应的 Job
 	var job *batchv1.Job
 	var reason string
 	if backup.Spec.BR == nil {
+		// 创建 Dumpling Job
+
 		// not found backup job, so we need to create it
 		job, reason, err = bm.makeExportJob(backup)
 		if err != nil {
@@ -135,6 +144,7 @@ func (bm *backupManager) syncBackupJob(backup *v1alpha1.Backup) error {
 			return err
 		}
 
+		// 确保 PVC 存在
 		reason, err = bm.ensureBackupPVCExist(backup)
 		if err != nil {
 			bm.statusUpdater.Update(backup, &v1alpha1.BackupCondition{
@@ -147,6 +157,8 @@ func (bm *backupManager) syncBackupJob(backup *v1alpha1.Backup) error {
 		}
 
 	} else {
+		// 创建 Backup Job
+
 		// not found backup job, so we need to create it
 		job, reason, err = bm.makeBackupJob(backup)
 		if err != nil {
@@ -177,6 +189,7 @@ func (bm *backupManager) syncBackupJob(backup *v1alpha1.Backup) error {
 	}, nil)
 }
 
+// makeExportJob 构建基于 Dumpling 的 Backup Job
 func (bm *backupManager) makeExportJob(backup *v1alpha1.Backup) (*batchv1.Job, string, error) {
 	ns := backup.GetNamespace()
 	name := backup.GetName()
@@ -218,6 +231,7 @@ func (bm *backupManager) makeExportJob(backup *v1alpha1.Backup) (*batchv1.Job, s
 	volumes := []corev1.Volume{}
 	initContainers := []corev1.Container{}
 
+	// 开启了 TLS，将证书 Secret 挂载到 /var/lib/tidb-client-tls
 	if backup.Spec.From.TLSClientSecretName != nil {
 		args = append(args, "--client-tls=true")
 		clientSecretName := *backup.Spec.From.TLSClientSecretName
@@ -236,6 +250,8 @@ func (bm *backupManager) makeExportJob(backup *v1alpha1.Backup) (*batchv1.Job, s
 		})
 	}
 
+	// 如果指定了 dumpling 镜像，那么使用 init container，与 backup manager container 共享一个 volume
+	// 然后使用指定镜像的 dumpling 二进制文件覆盖 backup manager container
 	if backup.Spec.ToolImage != "" {
 		dumplingVolumeMount := corev1.VolumeMount{
 			Name:      "dumpling-bin",
@@ -329,6 +345,7 @@ func (bm *backupManager) makeExportJob(backup *v1alpha1.Backup) (*batchv1.Job, s
 	return job, "", nil
 }
 
+// makeBackupJob 构建 Backup 的 Job
 // makeBackupJob requires that backup.Spec.BR != nil
 func (bm *backupManager) makeBackupJob(backup *v1alpha1.Backup) (*batchv1.Job, string, error) {
 	ns := backup.GetNamespace()
@@ -346,6 +363,7 @@ func (bm *backupManager) makeBackupJob(backup *v1alpha1.Backup) (*batchv1.Job, s
 		envVars []corev1.EnvVar
 		reason  string
 	)
+	// 指定了 spec.from 用 from 中数据
 	if backup.Spec.From != nil {
 		envVars, reason, err = backuputil.GenerateTidbPasswordEnv(ns, name, backup.Spec.From.SecretName, backup.Spec.UseKMS, bm.deps.KubeClientset)
 		if err != nil {
@@ -386,6 +404,7 @@ func (bm *backupManager) makeBackupJob(backup *v1alpha1.Backup) (*batchv1.Job, s
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
 
+	// 组件间 TLS 开启，挂载证书 Secret
 	if tc.IsTLSClusterEnabled() {
 		args = append(args, "--cluster-tls=true")
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -403,6 +422,7 @@ func (bm *backupManager) makeBackupJob(backup *v1alpha1.Backup) (*batchv1.Job, s
 		})
 	}
 
+	// Client TLS 开启，挂载证书 Secret
 	if backup.Spec.From != nil && tc.Spec.TiDB != nil && tc.Spec.TiDB.TLSClient != nil && tc.Spec.TiDB.TLSClient.Enabled && !tc.SkipTLSWhenConnectTiDB() {
 		args = append(args, "--client-tls=true")
 		clientSecretName := util.TiDBClientTLSSecretName(backup.Spec.BR.Cluster)
@@ -449,6 +469,7 @@ func (bm *backupManager) makeBackupJob(backup *v1alpha1.Backup) (*batchv1.Job, s
 		serviceAccount = backup.Spec.ServiceAccount
 	}
 
+	// 使用的镜像
 	brImage := "pingcap/br:" + tikvVersion
 	if backup.Spec.ToolImage != "" {
 		toolImage := backup.Spec.ToolImage

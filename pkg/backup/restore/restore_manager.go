@@ -32,6 +32,7 @@ import (
 	"k8s.io/utils/pointer"
 )
 
+// restoreManager 负责管理 Restore CR
 type restoreManager struct {
 	deps          *controller.Dependencies
 	statusUpdater controller.RestoreConditionUpdaterInterface
@@ -53,11 +54,13 @@ func (rm *restoreManager) UpdateCondition(restore *v1alpha1.Restore, condition *
 	return rm.statusUpdater.Update(restore, condition, nil)
 }
 
+// syncRestoreJob 进行 restore 的一次协调
 func (rm *restoreManager) syncRestoreJob(restore *v1alpha1.Restore) error {
 	ns := restore.GetNamespace()
 	name := restore.GetName()
 	restoreJobName := restore.GetRestoreJobName()
 
+	// 检查 Restore 参数
 	var err error
 	if restore.Spec.BR == nil {
 		err = backuputil.ValidateRestore(restore, "")
@@ -95,6 +98,7 @@ func (rm *restoreManager) syncRestoreJob(restore *v1alpha1.Restore) error {
 		return controller.IgnoreErrorf("invalid restore spec %s/%s", ns, name)
 	}
 
+	// 检查对应 Job 是否存在
 	_, err = rm.deps.JobLister.Jobs(ns).Get(restoreJobName)
 	if err == nil {
 		// already have a backup job running，return directly
@@ -105,11 +109,13 @@ func (rm *restoreManager) syncRestoreJob(restore *v1alpha1.Restore) error {
 		return fmt.Errorf("restore %s/%s get job %s failed, err: %v", ns, name, restoreJobName, err)
 	}
 
+	// 创建新的 Job
 	var (
 		job    *batchv1.Job
 		reason string
 	)
 	if restore.Spec.BR == nil {
+		// 构建 Lightning Job
 		job, reason, err = rm.makeImportJob(restore)
 		if err != nil {
 			rm.statusUpdater.Update(restore, &v1alpha1.RestoreCondition{
@@ -121,6 +127,7 @@ func (rm *restoreManager) syncRestoreJob(restore *v1alpha1.Restore) error {
 			return err
 		}
 
+		// 需要 PVC
 		reason, err = rm.ensureRestorePVCExist(restore)
 		if err != nil {
 			rm.statusUpdater.Update(restore, &v1alpha1.RestoreCondition{
@@ -132,6 +139,7 @@ func (rm *restoreManager) syncRestoreJob(restore *v1alpha1.Restore) error {
 			return err
 		}
 	} else {
+		// 构建 Restore Job
 		job, reason, err = rm.makeRestoreJob(restore)
 		if err != nil {
 			rm.statusUpdater.Update(restore, &v1alpha1.RestoreCondition{
@@ -144,6 +152,7 @@ func (rm *restoreManager) syncRestoreJob(restore *v1alpha1.Restore) error {
 		}
 	}
 
+	// 创建 Job
 	if err := rm.deps.JobControl.CreateJob(restore, job); err != nil {
 		errMsg := fmt.Errorf("create restore %s/%s job %s failed, err: %v", ns, name, restoreJobName, err)
 		rm.statusUpdater.Update(restore, &v1alpha1.RestoreCondition{

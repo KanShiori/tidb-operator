@@ -52,13 +52,20 @@ type defaultBackupControl struct {
 	backupManager backup.BackupManager
 }
 
+// UpdateBackup 协调 Backup
 // UpdateBackup executes the core logic loop for a Backup.
 func (c *defaultBackupControl) UpdateBackup(backup *v1alpha1.Backup) error {
+	// WHY? 设置 GroupVersion 与 Kind
 	backup.SetGroupVersionKind(controller.BackupControllerKind)
+
+	// 因为 Backup 会添加 Finalizer，因此要执行一些清理操作
+
+	// 添加 Finalizer
 	if err := c.addProtectionFinalizer(backup); err != nil {
 		return err
 	}
 
+	// 移除 Finalizer
 	if err := c.removeProtectionFinalizer(backup); err != nil {
 		return err
 	}

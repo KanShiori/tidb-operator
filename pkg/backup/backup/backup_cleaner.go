@@ -48,7 +48,9 @@ func NewBackupCleaner(deps *controller.Dependencies, statusUpdater controller.Ba
 	}
 }
 
+// Clean 对将删除的 Backup 执行一些清理操作
 func (bc *backupCleaner) Clean(backup *v1alpha1.Backup) error {
+	// 没有被删除，或者设置了删除策略
 	if backup.DeletionTimestamp == nil || !v1alpha1.IsCleanCandidate(backup) || v1alpha1.NeedNotClean(backup) {
 		// The backup object has not been deleted or we need to retain backup data，do nothing
 		return nil
@@ -82,6 +84,7 @@ func (bc *backupCleaner) Clean(backup *v1alpha1.Backup) error {
 		}, nil)
 	}
 
+	// 创建 Clean Job
 	// not found clean job, create it
 	job, reason, err := bc.makeCleanJob(backup)
 	if err != nil {
@@ -111,6 +114,7 @@ func (bc *backupCleaner) Clean(backup *v1alpha1.Backup) error {
 	}, nil)
 }
 
+// makeCleanJob 构建 Clean Job
 func (bc *backupCleaner) makeCleanJob(backup *v1alpha1.Backup) (*batchv1.Job, string, error) {
 	ns := backup.GetNamespace()
 	name := backup.GetName()
