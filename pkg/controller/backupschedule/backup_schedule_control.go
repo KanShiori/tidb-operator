@@ -50,12 +50,15 @@ func (c *defaultBackupScheduleControl) UpdateBackupSchedule(bs *v1alpha1.BackupS
 	var errs []error
 	oldStatus := bs.Status.DeepCopy()
 
+	// 进行协调
 	if err := c.updateBackupSchedule(bs); err != nil {
 		errs = append(errs, err)
 	}
 	if apiequality.Semantic.DeepEqual(&bs.Status, oldStatus) {
 		return errorutils.NewAggregate(errs)
 	}
+
+	// 更新其 BackupSchedule 对象
 	if err := c.statusUpdater.UpdateBackupScheduleStatus(bs.DeepCopy(), &bs.Status, oldStatus); err != nil {
 		errs = append(errs, err)
 	}

@@ -34,6 +34,7 @@ import (
 
 type nowFn func() time.Time
 
+// backupScheduleManager 实现了协调 BackupSchedule 的逻辑
 type backupScheduleManager struct {
 	deps *controller.Dependencies
 	now  nowFn
@@ -47,38 +48,49 @@ func NewBackupScheduleManager(deps *controller.Dependencies) backup.BackupSchedu
 	}
 }
 
+// Sync 进行一次 BackupSchedule 协调
 func (bm *backupScheduleManager) Sync(bs *v1alpha1.BackupSchedule) error {
+	// 清理不需要的 Backup
 	defer bm.backupGC(bs)
 
 	if bs.Spec.Pause {
 		return controller.IgnoreErrorf("backupSchedule %s/%s has been paused", bs.GetNamespace(), bs.GetName())
 	}
 
+	// 检查上一次 Backup 是否结束或者已经失败
 	if err := bm.canPerformNextBackup(bs); err != nil {
 		return err
 	}
 
+	// 检查时间是否 OK
+	// 时间不 OK 情况下，err 为 nil 直接返回
 	scheduledTime, err := getLastScheduledTime(bs, bm.now)
 	if scheduledTime == nil {
 		return err
 	}
 
+	// 准备开始执行新的 Backup，删除上一次的 Backup Job
+	// 因为前面的 canPerformNextBackup 判断限制了，执行中的 Backup Job 不会被删除
 	// delete the last backup job for release the backup PVC
 	if err := bm.deleteLastBackupJob(bs); err != nil {
 		return nil
 	}
 
+	// 创建对应的 Backup
+	// 创建后的操作，会由 Backup Controller 负责
 	backup, err := createBackup(bm.deps.BackupControl, bs, *scheduledTime)
 	if err != nil {
 		return err
 	}
 
+	// 记录 Status
 	bs.Status.LastBackup = backup.GetName()
 	bs.Status.LastBackupTime = &metav1.Time{Time: *scheduledTime}
 	bs.Status.AllBackupCleanTime = nil
 	return nil
 }
 
+// deleteLastBackupJob 删除上一次 Backup，以及对应的 Job
 func (bm *backupScheduleManager) deleteLastBackupJob(bs *v1alpha1.BackupSchedule) error {
 	ns := bs.GetNamespace()
 	bsName := bs.GetName()
@@ -104,10 +116,15 @@ func (bm *backupScheduleManager) deleteLastBackupJob(bs *v1alpha1.BackupSchedule
 	return bm.deps.JobControl.DeleteJob(backup, job)
 }
 
+// canPerformNextBackup 检查上一次 Backup 是否结束或者失败
+// 条件:
+//		+ Backup Complete
+//	OR	+ Backup Scheduled && Failed
 func (bm *backupScheduleManager) canPerformNextBackup(bs *v1alpha1.BackupSchedule) error {
 	ns := bs.GetNamespace()
 	bsName := bs.GetName()
 
+	// 得到上一次的 Backup 信息
 	backup, err := bm.deps.BackupLister.Backups(ns).Get(bs.Status.LastBackup)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -116,6 +133,7 @@ func (bm *backupScheduleManager) canPerformNextBackup(bs *v1alpha1.BackupSchedul
 		return fmt.Errorf("backup schedule %s/%s, get backup %s failed, err: %v", ns, bsName, bs.Status.LastBackup, err)
 	}
 
+	// 上一次 Backup 执行结束 OR 执行失败
 	if v1alpha1.IsBackupComplete(backup) || (v1alpha1.IsBackupScheduled(backup) && v1alpha1.IsBackupFailed(backup)) {
 		return nil
 	}
@@ -191,10 +209,12 @@ func getLastScheduledTime(bs *v1alpha1.BackupSchedule, nowFn nowFn) (*time.Time,
 	return &scheduledTime, nil
 }
 
+// buildBackup 构建 Backup 对象
 func buildBackup(bs *v1alpha1.BackupSchedule, timestamp time.Time) *v1alpha1.Backup {
 	ns := bs.GetNamespace()
 	bsName := bs.GetName()
 
+	// 从 template 读取模板
 	backupSpec := *bs.Spec.BackupTemplate.DeepCopy()
 	if backupSpec.BR == nil {
 		if backupSpec.StorageClassName == nil || *backupSpec.StorageClassName == "" {
@@ -230,6 +250,11 @@ func buildBackup(bs *v1alpha1.BackupSchedule, timestamp time.Time) *v1alpha1.Bac
 		backupSpec.ImagePullSecrets = bs.Spec.ImagePullSecrets
 	}
 
+	// 添加 Label
+	// 	+ "app.kubernetes.io/name": backup-schedule
+	//	+ "app.kubernetes.io/managed-by": backup-schedule-operator
+	//	+ "app.kubernetes.io/instance": <name>
+	//	+ "tidb.pingcap.com/backup-schedule": <name>
 	bsLabel := util.CombineStringMap(label.NewBackupSchedule().Instance(bsName).BackupSchedule(bsName), bs.Labels)
 	backup := &v1alpha1.Backup{
 		Spec: backupSpec,
@@ -238,7 +263,7 @@ func buildBackup(bs *v1alpha1.BackupSchedule, timestamp time.Time) *v1alpha1.Bac
 			Name:        bs.GetBackupCRDName(timestamp),
 			Labels:      bsLabel,
 			Annotations: bs.Annotations,
-			OwnerReferences: []metav1.OwnerReference{
+			OwnerReferences: []metav1.OwnerReference{ // 设置 OwnerReferences 用于垃圾回收
 				controller.GetBackupScheduleOwnerRef(bs),
 			},
 		},
@@ -247,21 +272,26 @@ func buildBackup(bs *v1alpha1.BackupSchedule, timestamp time.Time) *v1alpha1.Bac
 	return backup
 }
 
+// createBackup 创建 Backup 定义，并调用 Control 接口创建
 func createBackup(bkController controller.BackupControlInterface, bs *v1alpha1.BackupSchedule, timestamp time.Time) (*v1alpha1.Backup, error) {
 	bk := buildBackup(bs, timestamp)
 	return bkController.CreateBackup(bk)
 }
 
+// backupGC 定义过期的 Backup
 func (bm *backupScheduleManager) backupGC(bs *v1alpha1.BackupSchedule) {
 	ns := bs.GetNamespace()
 	bsName := bs.GetName()
 
+	// 如果设置了 MaxReservedTime，Backup 保留时间
 	// if MaxBackups and MaxReservedTime are set at the same time, MaxReservedTime is preferred.
 	if bs.Spec.MaxReservedTime != nil {
+		// 清理
 		bm.backupGCByMaxReservedTime(bs)
 		return
 	}
 
+	// 如果设置了 MaxBackups，最大 Backup 数量
 	if bs.Spec.MaxBackups != nil && *bs.Spec.MaxBackups > 0 {
 		bm.backupGCByMaxBackups(bs)
 		return
@@ -280,12 +310,14 @@ func (bm *backupScheduleManager) backupGCByMaxReservedTime(bs *v1alpha1.BackupSc
 		return
 	}
 
+	// 得到当前所有的 Backup
 	backupsList, err := bm.getBackupList(bs)
 	if err != nil {
 		klog.Errorf("backupGCByMaxReservedTime, err: %s", err)
 		return
 	}
 
+	// 遍历检查 Backup，删除过期的 Backup
 	var deleteCount int
 	for _, backup := range backupsList {
 		if backup.CreationTimestamp.Add(reservedTime).After(bm.now()) {
@@ -300,6 +332,7 @@ func (bm *backupScheduleManager) backupGCByMaxReservedTime(bs *v1alpha1.BackupSc
 		klog.Infof("backup schedule %s/%s gc backup %s success", ns, bsName, backup.GetName())
 	}
 
+	// 所有 Backup 都被删除，重置 BackupSchedule.Status
 	if deleteCount == len(backupsList) {
 		// All backups have been deleted, so the last backup information in the backupSchedule should be reset
 		bm.resetLastBackup(bs)
@@ -310,14 +343,17 @@ func (bm *backupScheduleManager) backupGCByMaxBackups(bs *v1alpha1.BackupSchedul
 	ns := bs.GetNamespace()
 	bsName := bs.GetName()
 
+	// 得到当前所有的 Backup
 	backupsList, err := bm.getBackupList(bs)
 	if err != nil {
 		klog.Errorf("backupGCByMaxBackups failed, err: %s", err)
 		return
 	}
 
+	// 按照创建时间排序
 	sort.Sort(byCreateTimeDesc(backupsList))
 
+	// 删除超过数量的 Backup
 	var deleteCount int
 	for i, backup := range backupsList {
 		if i < int(*bs.Spec.MaxBackups) {
@@ -332,6 +368,7 @@ func (bm *backupScheduleManager) backupGCByMaxBackups(bs *v1alpha1.BackupSchedul
 		klog.Infof("backup schedule %s/%s gc backup %s success", ns, bsName, backup.GetName())
 	}
 
+	// 所有 Backup 都被删除，重置 BackupSchedule.Status
 	if deleteCount == len(backupsList) {
 		// All backups have been deleted, so the last backup information in the backupSchedule should be reset
 		bm.resetLastBackup(bs)

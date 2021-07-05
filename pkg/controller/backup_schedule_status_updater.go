@@ -41,10 +41,12 @@ func NewRealBackupScheduleStatusUpdater(deps *Dependencies) BackupScheduleStatus
 	}
 }
 
+// realBackupScheduleStatusUpdater 负责更新 BackupSchedule 对象
 type realBackupScheduleStatusUpdater struct {
 	deps *Dependencies
 }
 
+// UpdateBackupScheduleStatus 更新 BackupSchedule 对象
 func (u *realBackupScheduleStatusUpdater) UpdateBackupScheduleStatus(
 	bs *v1alpha1.BackupSchedule,
 	newStatus *v1alpha1.BackupScheduleStatus,
@@ -54,6 +56,7 @@ func (u *realBackupScheduleStatusUpdater) UpdateBackupScheduleStatus(
 	bsName := bs.GetName()
 	// don't wait due to limited number of clients, but backoff after the default number of steps
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// 通过 Clientset 更新 BackupSchedule
 		_, updateErr := u.deps.Clientset.PingcapV1alpha1().BackupSchedules(ns).Update(bs)
 		if updateErr == nil {
 			klog.Infof("BackupSchedule: [%s/%s] updated successfully", ns, bsName)

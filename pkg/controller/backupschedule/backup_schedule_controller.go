@@ -29,6 +29,7 @@ import (
 	"k8s.io/klog"
 )
 
+// Controller 管理 BackupSchedule CR 资源
 // Controller controls restore.
 type Controller struct {
 	deps *controller.Dependencies
@@ -50,6 +51,7 @@ func NewController(deps *controller.Dependencies) *Controller {
 		),
 	}
 
+	// Informer 监听 BackupSchedule CR 资源
 	backupScheduleInformer := deps.InformerFactory.Pingcap().V1alpha1().BackupSchedules()
 	backupScheduleInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: c.enqueueBackupSchedule,
