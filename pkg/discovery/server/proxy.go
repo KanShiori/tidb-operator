@@ -87,7 +87,10 @@ func NewProxyServer(tcName string, tcTlsEnabled bool) Server {
 	}
 }
 
+// ServeHTTP 为 Proxy Server 处理逻辑
 func (p *proxyServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// 构建转发
+	// 转发到 pd service
 	proxy, err := buildProxy(p.proxyTo, p.tcTlsEnabled)
 	if err != nil {
 		msg := fmt.Sprintf("Error Happed, err:%v", err)

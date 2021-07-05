@@ -57,6 +57,7 @@ func (s *server) ListenAndServe(addr string) {
 	klog.Fatal(http.ListenAndServe(addr, s.container.ServeMux))
 }
 
+// newHandler 处理新 PD/DM 注册逻辑，Resp 中返回 PD 需要执行的参数
 func (s *server) newHandler(req *restful.Request, resp *restful.Response) {
 	encodedAdvertisePeerURL := req.PathParameter("advertise-peer-url")
 	registerType := req.PathParameter("register-type")
@@ -76,8 +77,10 @@ func (s *server) newHandler(req *restful.Request, resp *restful.Response) {
 	var result string
 	switch registerType {
 	case "pd":
+		// 新 PD 注册
 		result, err = s.discovery.Discover(advertisePeerURL)
 	case "dm":
+		// 新 DM 注册
 		result, err = s.discovery.DiscoverDM(advertisePeerURL)
 	default:
 		err = fmt.Errorf("invalid register-type %s", registerType)

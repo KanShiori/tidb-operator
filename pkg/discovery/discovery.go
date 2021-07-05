@@ -34,6 +34,7 @@ type TiDBDiscovery interface {
 	VerifyPDEndpoint(string) (string, error)
 }
 
+// tidbDiscovery 实现 PD 与 DM 服务注册的逻辑
 type tidbDiscovery struct {
 	cli           versioned.Interface
 	lock          sync.Mutex
@@ -66,6 +67,7 @@ func NewTiDBDiscovery(pdControl pdapi.PDControlInterface, masterControl dmapi.Ma
 	}
 }
 
+// Discover 接受一个新的 PD 注册，advertisePeerUrl 为对应的 peer 地址
 func (d *tidbDiscovery) Discover(advertisePeerUrl string) (string, error) {
 	d.lock.Lock()
 	defer d.lock.Unlock()
@@ -104,6 +106,8 @@ func (d *tidbDiscovery) Discover(advertisePeerUrl string) (string, error) {
 	currentCluster = d.clusters[keyName]
 	currentCluster.peers[podName] = struct{}{}
 
+	// peers 数量与期望数量相同，仅仅可能在第一个 PD 时候发生，因此 PD 是第一个
+	// 那么执行 --initial-cluster 参数
 	// Should take failover replicas into consideration
 	if len(currentCluster.peers) == int(tc.PDStsDesiredReplicas()) && tc.Spec.Cluster == nil {
 		delete(currentCluster.peers, podName)
@@ -120,6 +124,10 @@ func (d *tidbDiscovery) Discover(advertisePeerUrl string) (string, error) {
 		return fmt.Sprintf("--initial-cluster=%s=%s://%s", podName, tc.Scheme(), advertisePeerUrl), nil
 	}
 
+	// 所有 PD Client
+	//	+ PD Client
+	//	+ Other Cluster PD Client
+	//	+ PD Peers Client
 	var pdClients []pdapi.PDClient
 
 	if tc.Spec.PD != nil {
@@ -138,6 +146,7 @@ func (d *tidbDiscovery) Discover(advertisePeerUrl string) (string, error) {
 		pdClients = append(pdClients, d.pdControl.GetPeerPDClient(pdapi.Namespace(ns), tc.Name, tc.IsTLSClusterEnabled(), pdMember.ClientURL, pdMember.Name))
 	}
 
+	// 通过 PD Client 得到当前的一个 Members 信息
 	var membersInfo *pdapi.MembersInfo
 	for _, client := range pdClients {
 		membersInfo, err = client.GetMembers()
@@ -149,6 +158,7 @@ func (d *tidbDiscovery) Discover(advertisePeerUrl string) (string, error) {
 		return "", err
 	}
 
+	// 通过 --join=member_addr1,member_addr2.. 参数加入到当前集群
 	membersArr := make([]string, 0)
 	for _, member := range membersInfo.Members {
 		// Corresponds to https://github.com/tikv/pd/blob/43baea981b406df26cd49e8b99cc42354f0a6696/server/join/join.go#L88.
@@ -235,6 +245,7 @@ func (d *tidbDiscovery) DiscoverDM(advertisePeerUrl string) (string, error) {
 	return fmt.Sprintf("--join=%s", strings.Join(mastersArr, ",")), nil
 }
 
+// VerifyPDEndpoint 返回已存在的所有 PD 地址
 func (d *tidbDiscovery) VerifyPDEndpoint(pdURL string) (string, error) {
 	pdEndpoint := parsePDURL(pdURL)
 	klog.Infof("Get PD endpoint URL: %s, scheme is %s, pdMemberName is %s, pdMemberPort is %s, tcName is %s", pdURL, pdEndpoint.scheme, pdEndpoint.pdMemberName, pdEndpoint.pdMemberPort, pdEndpoint.tcName)

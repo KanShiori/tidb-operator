@@ -88,12 +88,16 @@ func main() {
 		tcTls = true
 	}
 
+	// 启动 Discovery HTTP Server
 	go wait.Forever(func() {
 		addr := fmt.Sprintf("0.0.0.0:%d", port)
 		klog.Infof("starting TiDB Discovery server, listening on %s", addr)
 		discoveryServer := server.NewServer(pdapi.NewDefaultPDControl(kubeCli), dmapi.NewDefaultMasterControl(kubeCli), cli, kubeCli)
 		discoveryServer.ListenAndServe(addr)
 	}, 5*time.Second)
+
+	// 启动 Proxy HTTP Server
+	// Proxy 将请求转发到 PD Service
 	go wait.Forever(func() {
 		addr := fmt.Sprintf("0.0.0.0:%d", proxyPort)
 		klog.Infof("starting TiDB Proxy server, listening on %s", addr)
@@ -101,6 +105,7 @@ func main() {
 		proxyServer.ListenAndServe(addr)
 	}, 5*time.Second)
 
+	// 启动一个无用的 HTTP Server?
 	srv := http.Server{Addr: ":6060"}
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc,
