@@ -44,6 +44,7 @@ func (m *reclaimPolicyManager) Sync(tc *v1alpha1.TidbCluster) error {
 	return m.sync(v1alpha1.TiDBClusterKind, tc, tc.IsPVReclaimEnabled(), *tc.Spec.PVReclaimPolicy)
 }
 
+// SyncMonitor 进行 TiDBMonitor 相关 PVC 协调
 func (m *reclaimPolicyManager) SyncMonitor(tm *v1alpha1.TidbMonitor) error {
 	return m.sync(v1alpha1.TiDBMonitorKind, tm, false, *tm.Spec.PVReclaimPolicy)
 }

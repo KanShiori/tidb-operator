@@ -42,6 +42,7 @@ import (
 	"k8s.io/klog"
 )
 
+// MonitorManager 实现了协调 Monitor 的逻辑
 type MonitorManager struct {
 	deps               *controller.Dependencies
 	pvManager          monitor.MonitorManager
@@ -64,6 +65,7 @@ func NewMonitorManager(deps *controller.Dependencies) *MonitorManager {
 	}
 }
 
+// SyncMonitor 进行一次 TiDBMonitor 的协调
 func (m *MonitorManager) SyncMonitor(monitor *v1alpha1.TidbMonitor) error {
 	if monitor.DeletionTimestamp != nil {
 		return nil
@@ -73,7 +75,10 @@ func (m *MonitorManager) SyncMonitor(monitor *v1alpha1.TidbMonitor) error {
 		return nil
 	}
 
+	// 添加模拟的参数
 	defaultTidbMonitor(monitor)
+
+	// 检查参数
 	if !m.validate(monitor) {
 		return nil // fatal error, no need to retry on invalid object
 	}
@@ -81,13 +86,16 @@ func (m *MonitorManager) SyncMonitor(monitor *v1alpha1.TidbMonitor) error {
 	var firstTc *v1alpha1.TidbCluster
 	assetStore := NewStore(m.deps.SecretLister)
 
+	// 遍历配置的 Cluster
 	for _, tcRef := range monitor.Spec.Clusters {
+		// 查询对应的 TiDBCluster 是否存在
 		tc, err := m.deps.TiDBClusterLister.TidbClusters(tcRef.Namespace).Get(tcRef.Name)
 		if err != nil {
 			rerr := fmt.Errorf("get tm[%s/%s]'s target tc[%s/%s] failed, err: %v", monitor.Namespace, monitor.Name, tcRef.Namespace, tcRef.Name, err)
 			return rerr
 		}
 
+		// TiDBCluster 开启了 TLS，查询对应的 Client Cert Secret 对象
 		// If cluster enable tls
 		if tc.IsTLSClusterEnabled() {
 			tcTlsSecretName := util.ClusterClientTLSSecretName(tc.Name)
@@ -100,6 +108,8 @@ func (m *MonitorManager) SyncMonitor(monitor *v1alpha1.TidbMonitor) error {
 		if firstTc == nil && !tc.HeterogeneousWithoutLocalPD() {
 			firstTc = tc
 		}
+
+		// sync 监控集群所需要的存储
 		err = m.syncDashboardMetricStorage(tc, monitor)
 		if err != nil {
 			klog.Errorf("Fail to sync TiDB Dashboard metrics config for TiDB cluster [%s/%s], error: %v", tc.Namespace, tc.Name, err)
@@ -129,12 +139,15 @@ func (m *MonitorManager) SyncMonitor(monitor *v1alpha1.TidbMonitor) error {
 		}
 	}
 
+	// 协调 Secret 对象
+	// Secret 中保存了访问各个 Cluster 所需要的 Secret 对象名称
 	// create or update tls asset secret
 	err := m.syncAssetSecret(monitor, assetStore)
 	if err != nil {
 		return err
 	}
 
+	// 协调 Service
 	// Sync Service
 	if err := m.syncTidbMonitorService(monitor); err != nil {
 		message := fmt.Sprintf("Sync TidbMonitor[%s/%s] Service failed, err: %v", monitor.Namespace, monitor.Name, err)
@@ -143,6 +156,7 @@ func (m *MonitorManager) SyncMonitor(monitor *v1alpha1.TidbMonitor) error {
 	}
 	klog.V(4).Infof("tm[%s/%s]'s service synced", monitor.Namespace, monitor.Name)
 
+	// 协调 StatefulSet
 	// Sync Statefulset
 	if err := m.syncTidbMonitorStatefulset(firstTc, firstDc, monitor); err != nil {
 		message := fmt.Sprintf("Sync TidbMonitor[%s/%s] Statefulset failed, err:%v", monitor.Namespace, monitor.Name, err)
@@ -172,6 +186,7 @@ func (m *MonitorManager) SyncMonitor(monitor *v1alpha1.TidbMonitor) error {
 	}
 	klog.V(4).Infof("tm[%s/%s]'s ingress synced", monitor.Namespace, monitor.Name)
 
+	// 更新 TiDBMonitor Status
 	err = m.syncTidbMonitorStatus(monitor)
 	if err != nil {
 		klog.Errorf("Fail to sync tm[%s/%s]'s status, err: %v", monitor.Namespace, monitor.Name, err)
@@ -182,6 +197,7 @@ func (m *MonitorManager) SyncMonitor(monitor *v1alpha1.TidbMonitor) error {
 }
 
 func (m *MonitorManager) syncTidbMonitorStatus(monitor *v1alpha1.TidbMonitor) error {
+	// 主要更新 StatefulSet 信息
 	sts, err := m.deps.StatefulSetLister.StatefulSets(monitor.Namespace).Get(GetMonitorObjectName(monitor))
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -194,7 +210,9 @@ func (m *MonitorManager) syncTidbMonitorStatus(monitor *v1alpha1.TidbMonitor) er
 	return nil
 }
 
+// syncTidbMonitorService 同步所有的 Service
 func (m *MonitorManager) syncTidbMonitorService(monitor *v1alpha1.TidbMonitor) error {
+	// 得到 Monitor 所有所需的 Service，创建或者更新
 	services := getMonitorService(monitor)
 	for _, newSvc := range services {
 		if err := member.CreateOrUpdateService(m.deps.ServiceLister, m.deps.ServiceControl, newSvc, monitor); err != nil {
@@ -204,26 +222,37 @@ func (m *MonitorManager) syncTidbMonitorService(monitor *v1alpha1.TidbMonitor) e
 	return nil
 }
 
+// syncTidbMonitorStatefulset 进行 StatefulSet 相关的协调
+//	+ ConfigMap: Prometheus 的配置
+// 	+ Secret: 保存 Spec 中配置的 Grafana 的 User 与 Password
+// 	+ RBAC
+//	+ StatefulSet
 func (m *MonitorManager) syncTidbMonitorStatefulset(tc *v1alpha1.TidbCluster, dc *v1alpha1.DMCluster, monitor *v1alpha1.TidbMonitor) error {
 	ns := monitor.Namespace
 	name := monitor.Name
+
+	// 协调 ConfigMap
 	cm, err := m.syncTidbMonitorConfig(monitor)
 	if err != nil {
 		klog.Errorf("tm[%s/%s]'s configmap failed to sync,err: %v", ns, name, err)
 		return err
 	}
+
+	// 协调 Secret 对象
 	secret, err := m.syncTidbMonitorSecret(monitor)
 	if err != nil {
 		klog.Errorf("tm[%s/%s]'s secret failed to sync,err: %v", ns, name, err)
 		return err
 	}
 
+	// 协调 RBAC
 	sa, err := m.syncTidbMonitorRbac(monitor)
 	if err != nil {
 		klog.Errorf("tm[%s/%s]'s rbac failed to sync,err: %v", ns, name, err)
 		return err
 	}
 
+	// 平滑从 Deployment 迁移到 StatefulSet
 	result, err := m.smoothMigrationToStatefulSet(monitor)
 	if err != nil {
 		klog.Errorf("Fail to migrate from deployment to statefulset for tm [%s/%s], err: %v", ns, name, err)
@@ -234,18 +263,21 @@ func (m *MonitorManager) syncTidbMonitorStatefulset(tc *v1alpha1.TidbCluster, dc
 		return nil
 	}
 
+	// 协调 StatefulSet
+	// 构建 StatefulSet 对象
 	newMonitorSts, err := getMonitorStatefulSet(sa, cm, secret, monitor, tc, dc)
 	if err != nil {
 		klog.Errorf("Fail to generate statefulset for tm [%s/%s], err: %v", ns, name, err)
 		return err
 	}
-
+	// 读取当前的 StatefulSet
 	oldMonitorSetTmp, err := m.deps.StatefulSetLister.StatefulSets(ns).Get(GetMonitorObjectName(monitor))
 	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("syncTidbMonitorStatefulset: fail to get sts %s for cluster %s/%s, error: %s", GetMonitorObjectName(monitor), ns, name, err)
 	}
 	setNotExist := errors.IsNotFound(err)
 	if setNotExist {
+		// 创建 StatefulSet
 		err = member.SetStatefulSetLastAppliedConfigAnnotation(newMonitorSts)
 		if err != nil {
 			return err
@@ -256,6 +288,7 @@ func (m *MonitorManager) syncTidbMonitorStatefulset(tc *v1alpha1.TidbCluster, dc
 		return controller.RequeueErrorf("TidbMonitor: [%s/%s], waiting for tidbmonitor running", ns, name)
 	}
 
+	// Update StatefulSet
 	return member.UpdateStatefulSet(m.deps.StatefulSetControl, monitor, newMonitorSts, oldMonitorSetTmp)
 }
 
@@ -267,6 +300,9 @@ func (m *MonitorManager) syncTidbMonitorSecret(monitor *v1alpha1.TidbMonitor) (*
 	return m.deps.TypedControl.CreateOrUpdateSecret(monitor, newSt)
 }
 
+// syncTidbMonitorConfig 进行 ConfigMap 的创建
+//
+// ConfigMap 中包含了 Prometheus 的配置
 func (m *MonitorManager) syncTidbMonitorConfig(monitor *v1alpha1.TidbMonitor) (*corev1.ConfigMap, error) {
 	if features.DefaultFeatureGate.Enabled(features.AutoScaling) {
 		// TODO: We need to update the status to tell users we are monitoring extra clusters
@@ -349,6 +385,7 @@ func (m *MonitorManager) syncTidbMonitorConfig(monitor *v1alpha1.TidbMonitor) (*
 		}
 	}
 
+	// 构建对应的 ConfigMap 对象
 	newCM, err := getMonitorConfigMap(monitor, monitorClusterInfos, dmClusterInfos)
 	if err != nil {
 		return nil, err
@@ -376,7 +413,13 @@ func (m *MonitorManager) syncTidbMonitorConfig(monitor *v1alpha1.TidbMonitor) (*
 	return m.deps.TypedControl.CreateOrUpdateConfigMap(monitor, newCM)
 }
 
+// syncTidbMonitorRbac 进行 RBAC 的协调
+// 	+ ServiceAccount: <name>-monitor
+//	+ Role: <name>-monitor
+//		* Rule: pod 的读权限
+//	+ RoleBinding / ClusterRoleBinding:
 func (m *MonitorManager) syncTidbMonitorRbac(monitor *v1alpha1.TidbMonitor) (*corev1.ServiceAccount, error) {
+	// Service Account
 	sa := getMonitorServiceAccount(monitor)
 	sa, err := m.deps.TypedControl.CreateOrUpdateServiceAccount(monitor, sa)
 	if err != nil {
@@ -438,6 +481,7 @@ func (m *MonitorManager) syncTidbMonitorRbac(monitor *v1alpha1.TidbMonitor) (*co
 	return sa, nil
 }
 
+// syncIngress 协调 Prometheus 与 Grafana Ingress
 func (m *MonitorManager) syncIngress(monitor *v1alpha1.TidbMonitor) error {
 	if err := m.syncPrometheusIngress(monitor); err != nil {
 		return err
@@ -608,6 +652,7 @@ func (c *MonitorManager) validate(tidbmonitor *v1alpha1.TidbMonitor) bool {
 	return true
 }
 
+// syncTidbMonitorPV 给对应使用的 PV 加上 Label 与 Annoation 信息
 func (m *MonitorManager) syncTidbMonitorPV(tm *v1alpha1.TidbMonitor) error {
 	ns := tm.GetNamespace()
 	instanceName := tm.Name
@@ -689,6 +734,8 @@ func (m *MonitorManager) syncAssetSecret(monitor *v1alpha1.TidbMonitor, store *S
 	return nil
 }
 
+// syncDashboardMetricStorage 将 Prometheus Grafana 信息放入到 PD ETCD 中
+// WHY? 为了什么？？
 func (m *MonitorManager) syncDashboardMetricStorage(tc *v1alpha1.TidbCluster, tm *v1alpha1.TidbMonitor) error {
 	if tc.Spec.PD == nil {
 		return nil

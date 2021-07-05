@@ -759,6 +759,10 @@ func getMonitorVolumes(config *core.ConfigMap, monitor *v1alpha1.TidbMonitor) []
 	return volumes
 }
 
+// getMonitorService 得到 Monitor 所有所需要的对象
+// 	+ prometheus Service
+//	+ reloader Service
+//	+ grafana Service（可选）
 func getMonitorService(monitor *v1alpha1.TidbMonitor) []*core.Service {
 	var services []*core.Service
 

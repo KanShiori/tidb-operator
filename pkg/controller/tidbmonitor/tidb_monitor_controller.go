@@ -29,6 +29,7 @@ import (
 	"k8s.io/klog"
 )
 
+// Controller 管理 TiDBMonitor CR 对象
 // Controller syncs TidbMonitor
 type Controller struct {
 	deps    *controller.Dependencies
@@ -48,8 +49,11 @@ func NewController(deps *controller.Dependencies) *Controller {
 		),
 	}
 
+	// 监听 TiDBMonitor 与 StatefulSet 对象，使用 Informer
 	tidbMonitorInformer := deps.InformerFactory.Pingcap().V1alpha1().TidbMonitors()
 	statefulsetInformer := deps.KubeInformerFactory.Apps().V1().StatefulSets()
+
+	// 添加 Queue 用于回调
 	controller.WatchForObject(tidbMonitorInformer.Informer(), c.queue)
 	controller.WatchForController(statefulsetInformer.Informer(), c.queue, func(ns, name string) (runtime.Object, error) {
 		return c.deps.TiDBMonitorLister.TidbMonitors(ns).Get(name)
@@ -58,6 +62,7 @@ func NewController(deps *controller.Dependencies) *Controller {
 	return c
 }
 
+// Run 启动 Controller 的运行
 func (c *Controller) Run(workers int, stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	defer c.queue.ShutDown()
@@ -65,6 +70,7 @@ func (c *Controller) Run(workers int, stopCh <-chan struct{}) {
 	klog.Info("Starting tidbmonitor controller")
 	defer klog.Info("Shutting down tidbmonitor controller")
 
+	// 启动多个 worker，消费同一个队列
 	for i := 0; i < workers; i++ {
 		go wait.Until(c.worker, time.Second, stopCh)
 	}
@@ -77,6 +83,7 @@ func (c *Controller) worker() {
 	}
 }
 
+// processNextWorkItem 从队列中取出 key，并进行一次 sync
 // processNextWorkItem dequeues items, processes them, and marks them done. It enforces that the syncHandler is never
 // invoked concurrently with the same key.
 func (c *Controller) processNextWorkItem() bool {
@@ -98,6 +105,7 @@ func (c *Controller) processNextWorkItem() bool {
 	return true
 }
 
+// sync 针对 key 的对象进行一次 sync
 func (c *Controller) sync(key string) error {
 	startTime := time.Now()
 	defer func() {
@@ -117,5 +125,6 @@ func (c *Controller) sync(key string) error {
 		return err
 	}
 
+	// 走 Control 执行真正的协调
 	return c.control.ReconcileTidbMonitor(tm)
 }

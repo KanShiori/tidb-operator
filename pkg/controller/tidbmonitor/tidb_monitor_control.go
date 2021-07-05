@@ -40,6 +40,7 @@ func NewDefaultTidbMonitorControl(deps *controller.Dependencies, monitorManager 
 	return &defaultTidbMonitorControl{deps: deps, monitorManager: monitorManager}
 }
 
+// defaultTidbMonitorControl 实现了 TiDBMonitor 的协调逻辑
 type defaultTidbMonitorControl struct {
 	deps           *controller.Dependencies
 	monitorManager monitor.MonitorManager
@@ -57,6 +58,8 @@ func (c *defaultTidbMonitorControl) ReconcileTidbMonitor(tm *v1alpha1.TidbMonito
 func (c *defaultTidbMonitorControl) reconcileTidbMonitor(tm *v1alpha1.TidbMonitor) error {
 	var errs []error
 	oldStatus := tm.Status.DeepCopy()
+
+	// 进行协调
 	if err := c.monitorManager.SyncMonitor(tm); err != nil {
 		errs = append(errs, err)
 	}
@@ -64,6 +67,8 @@ func (c *defaultTidbMonitorControl) reconcileTidbMonitor(tm *v1alpha1.TidbMonito
 	if apiequality.Semantic.DeepEqual(&tm.Status, oldStatus) {
 		return errorutils.NewAggregate(errs)
 	}
+
+	// 更新 TiDBMonitor 对象
 	if _, err := c.UpdateTidbMonitor(tm.DeepCopy()); err != nil {
 		errs = append(errs, err)
 	}

@@ -258,6 +258,18 @@ func (c *FakePVControl) PatchPVReclaimPolicy(_ runtime.Object, pv *corev1.Persis
 	return c.PVIndexer.Update(pv)
 }
 
+// UpdateMetaInfo 更新 PV 的 Label/Annotations 信息
+// Label:
+//	+ app.kubernetes.io/namespace: <obj_namespace>
+//	+ app.kubernetes.io/name: <obj>.label
+// 	+ app.kubernetes.io/managed-by: <obj>.label
+//	+ app.kubernetes.io/instance: <obj>.label
+//	+ app.kubernetes.io/component: <obj>.label
+//	+ tidb.pingcap.com/cluster-id: <obj>.label (可选)
+//	+ tidb.pingcap.com/member-id: <obj>.label (可选)
+//	+ tidb.pingcap.com/store-id: <obj>.label (可选)
+// Annotation:
+//	+ tidb.pingcap.com/pod-name: obj.annotations(可选)
 // UpdateMetaInfo update the meta info of pv
 func (c *FakePVControl) UpdateMetaInfo(obj runtime.Object, pv *corev1.PersistentVolume) (*corev1.PersistentVolume, error) {
 	defer c.updatePVTracker.Inc()
