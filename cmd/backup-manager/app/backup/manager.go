@@ -71,11 +71,13 @@ func (bm *Manager) setOptions(backup *v1alpha1.Backup) {
 	bm.Options.Password = util.GetOptionValueFromEnv(bkconstants.TidbPasswordKey, bkconstants.BackupManagerEnvVarPrefix)
 }
 
+// ProcessBackup 进行一次 backup
 // ProcessBackup used to process the backup logic
 func (bm *Manager) ProcessBackup() error {
 	ctx, cancel := util.GetContextForTerminationSignals(bm.ResourceName)
 	defer cancel()
 
+	// 得到对应的 Backup 对象
 	var errs []error
 	backup, err := bm.backupLister.Backups(bm.Namespace).Get(bm.ResourceName)
 	if err != nil {
@@ -260,6 +262,7 @@ func (bm *Manager) performBackup(ctx context.Context, backup *v1alpha1.Backup, d
 		return err
 	}
 
+	// 执行 BR 命令行
 	// run br binary to do the real job
 	backupErr := bm.backupData(ctx, backup)
 
@@ -301,6 +304,7 @@ func (bm *Manager) performBackup(ctx context.Context, backup *v1alpha1.Backup, d
 	}
 	klog.Infof("backup cluster %s data to %s success", bm, backupFullPath)
 
+	// 读取 BR 元信息，更新到 Backup 对象 Status
 	backupMeta, err := util.GetBRMetaData(ctx, backup.Spec.StorageProvider)
 	if err != nil {
 		errs = append(errs, err)

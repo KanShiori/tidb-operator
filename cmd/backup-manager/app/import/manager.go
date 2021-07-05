@@ -103,6 +103,7 @@ func (rm *RestoreManager) performRestore(ctx context.Context, restore *v1alpha1.
 		return err
 	}
 
+	// 通过 rclone 下载远端的 tar 包
 	var errs []error
 	restoreDataPath := rm.getRestoreDataPath()
 	opts := util.GetOptions(restore.Spec.StorageProvider)
@@ -120,6 +121,7 @@ func (rm *RestoreManager) performRestore(ctx context.Context, restore *v1alpha1.
 	}
 	klog.Infof("download cluster %s backup %s data success", rm, rm.BackupPath)
 
+	// 解压
 	restoreDataDir := filepath.Dir(restoreDataPath)
 	unarchiveDataPath, err := unarchiveBackupData(restoreDataPath, restoreDataDir)
 	if err != nil {
@@ -151,6 +153,7 @@ func (rm *RestoreManager) performRestore(ctx context.Context, restore *v1alpha1.
 	}
 	klog.Infof("get cluster %s commitTs %s success", rm, commitTs)
 
+	// 执行命令导入数据
 	err = rm.loadTidbClusterData(ctx, unarchiveDataPath, restore)
 	if err != nil {
 		errs = append(errs, err)

@@ -29,6 +29,12 @@ func NewBackupMgrCommand() *cobra.Command {
 
 	cmds.PersistentFlags().StringVarP(&kubecfg, "kubeconfig", "k", "", "Path to kubeconfig file, omit this if run in cluster.")
 
+	// 添加子命令
+	//  + backup
+	//	+ export
+	//	+ restore
+	//	+ import
+	//	+ clean
 	cmds.AddCommand(NewBackupCommand())
 	cmds.AddCommand(NewExportCommand())
 	cmds.AddCommand(NewRestoreCommand())

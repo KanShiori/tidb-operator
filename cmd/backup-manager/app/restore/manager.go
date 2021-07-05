@@ -248,6 +248,7 @@ func (rm *Manager) performRestore(ctx context.Context, restore *v1alpha1.Restore
 		}
 	}
 
+	// 执行 BR 命令
 	restoreErr := rm.restoreData(ctx, restore)
 
 	if db != nil && oldTikvGCTimeDuration < tikvGCTimeDuration {

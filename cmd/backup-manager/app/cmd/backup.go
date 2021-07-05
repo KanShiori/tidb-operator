@@ -48,11 +48,15 @@ func NewBackupCommand() *cobra.Command {
 	return cmd
 }
 
+// runBackup 为 backup 命令入口
 func runBackup(backupOpts backup.Options, kubecfg string) error {
+	// 创建 Kubelet Client
 	kubeCli, cli, err := util.NewKubeAndCRCli(kubecfg)
 	if err != nil {
 		return err
 	}
+
+	// 构建 Informer 与 Recorder
 	options := []informers.SharedInformerOption{
 		informers.WithNamespace(backupOpts.Namespace),
 	}
@@ -68,6 +72,7 @@ func runBackup(backupOpts backup.Options, kubecfg string) error {
 	// waiting for the shared informer's store has synced.
 	cache.WaitForCacheSync(ctx.Done(), backupInformer.Informer().HasSynced)
 
+	// 创建 BackupManager 处理
 	klog.Infof("start to process backup %s", backupOpts.String())
 	bm := backup.NewManager(backupInformer.Lister(), statusUpdater, backupOpts)
 	return bm.ProcessBackup()

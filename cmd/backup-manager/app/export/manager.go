@@ -258,6 +258,7 @@ func (bm *BackupManager) performBackup(ctx context.Context, backup *v1alpha1.Bac
 		return err
 	}
 
+	// 执行 dumpling 命令，数据导出到 backupFullPath
 	backupErr := bm.dumpTidbClusterData(ctx, backupFullPath, backup)
 	if oldTikvGCTimeDuration < tikvGCTimeDuration {
 		// use another context to revert `tikv_gc_life_time` back.
@@ -312,6 +313,7 @@ func (bm *BackupManager) performBackup(ctx context.Context, backup *v1alpha1.Bac
 	}
 	klog.Infof("get cluster %s commitTs %s success", bm, commitTs)
 
+	// 打包备份数据
 	err = archiveBackupData(backupFullPath, archiveBackupPath)
 	if err != nil {
 		errs = append(errs, err)
@@ -346,6 +348,7 @@ func (bm *BackupManager) performBackup(ctx context.Context, backup *v1alpha1.Bac
 	// archive backup data successfully, origin dir can be deleted safely
 	os.RemoveAll(backupFullPath)
 
+	// 上传打包文件到远端，使用 rclone
 	err = bm.backupDataToRemote(ctx, archiveBackupPath, bucketURI, opts)
 	if err != nil {
 		errs = append(errs, err)

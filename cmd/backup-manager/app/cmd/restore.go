@@ -50,11 +50,15 @@ func NewRestoreCommand() *cobra.Command {
 	return cmd
 }
 
+// runRestore 为 restore 命令入口
 func runRestore(restoreOpts restore.Options, kubecfg string) error {
+	// 创建 Kubelet Client
 	kubeCli, cli, err := util.NewKubeAndCRCli(kubecfg)
 	if err != nil {
 		return err
 	}
+
+	// 构建 Informer 与 Recorder
 	options := []informers.SharedInformerOption{
 		informers.WithNamespace(restoreOpts.Namespace),
 	}
@@ -70,6 +74,7 @@ func runRestore(restoreOpts restore.Options, kubecfg string) error {
 	// waiting for the shared informer's store has synced.
 	cache.WaitForCacheSync(ctx.Done(), restoreInformer.Informer().HasSynced)
 
+	// 创建 RestoreManager 处理
 	klog.Infof("start to process restore %s", restoreOpts.String())
 	rm := restore.NewManager(restoreInformer.Lister(), statusUpdater, restoreOpts)
 	return rm.ProcessRestore()
