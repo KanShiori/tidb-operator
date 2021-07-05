@@ -41,6 +41,8 @@ func (f *tidbFailover) Failover(tc *v1alpha1.TidbCluster) error {
 		tc.Status.TiDB.FailureMembers = map[string]v1alpha1.TiDBFailureMember{}
 	}
 
+	// 删除可能变 health 的 TiDB
+	// 导致 status.failureMembers 变小，从而导致 StatefulSet 的缩容
 	for _, tidbMember := range tc.Status.TiDB.Members {
 		_, exist := tc.Status.TiDB.FailureMembers[tidbMember.Name]
 		if exist && tidbMember.Health {
@@ -49,11 +51,14 @@ func (f *tidbFailover) Failover(tc *v1alpha1.TidbCluster) error {
 		}
 	}
 
+	// 是否允许故障转移
 	if tc.Spec.TiDB.MaxFailoverCount == nil || *tc.Spec.TiDB.MaxFailoverCount <= 0 {
 		klog.Infof("tidb failover is disabled for %s/%s, skipped", tc.Namespace, tc.Name)
 		return nil
 	}
 
+	// 将其记录到 status.failureMembers
+	// 记录到 status.failureMembers 会导致 TiDBCluster.TiDBStsDesiredReplicas() 数量变大，从而导致 StatefulSet 的扩容
 	maxFailoverCount := *tc.Spec.TiDB.MaxFailoverCount
 	for _, tidbMember := range tc.Status.TiDB.Members {
 		_, exist := tc.Status.TiDB.FailureMembers[tidbMember.Name]
@@ -98,6 +103,7 @@ func (f *tidbFailover) Failover(tc *v1alpha1.TidbCluster) error {
 	return nil
 }
 
+// Recover 表示故障转移过程结束
 func (f *tidbFailover) Recover(tc *v1alpha1.TidbCluster) {
 	tc.Status.TiDB.FailureMembers = nil
 }

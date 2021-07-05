@@ -414,6 +414,9 @@ func (tc *TidbCluster) GetPDDeletedFailureReplicas() int32 {
 	return deteledReplicas
 }
 
+// PDStsDesiredReplicas 获取期望的 StatefulSet 的 Pod 数量
+// 因为故障转移会自动增加 StatefulSet Pod 数量，所以 StatefulSet 数量会比 Spec 中多。
+// 因此这里要加上被标记为 DeletedFailureReplica。
 func (tc *TidbCluster) PDStsDesiredReplicas() int32 {
 	if tc.Spec.PD == nil {
 		return 0

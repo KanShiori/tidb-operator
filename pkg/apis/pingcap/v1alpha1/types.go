@@ -1005,8 +1005,11 @@ type PDStatus struct {
 	// Members contains PDs in current TidbCluster
 	Members map[string]PDMember `json:"members,omitempty"`
 	// PeerMembers contains PDs NOT in current TidbCluster
-	PeerMembers     map[string]PDMember        `json:"peerMembers,omitempty"`
-	Leader          PDMember                   `json:"leader,omitempty"`
+	PeerMembers map[string]PDMember `json:"peerMembers,omitempty"`
+	Leader      PDMember            `json:"leader,omitempty"`
+	// 用于记录故障转移过程中，记录出错误的 PD
+	// FailureMembers 的变更会导致 TiDBCluster.TiDBStsDesiredReplicas() 变化，从而导致 StatefulSet 缩扩容
+	// PD 的 PDFailureMember 会真正清除 Pod 与 PVC
 	FailureMembers  map[string]PDFailureMember `json:"failureMembers,omitempty"`
 	UnjoinedMembers map[string]UnjoinedMember  `json:"unjoinedMembers,omitempty"`
 	Image           string                     `json:"image,omitempty"`
@@ -1044,9 +1047,11 @@ type UnjoinedMember struct {
 
 // TiDBStatus is TiDB status
 type TiDBStatus struct {
-	Phase                    MemberPhase                  `json:"phase,omitempty"`
-	StatefulSet              *apps.StatefulSetStatus      `json:"statefulSet,omitempty"`
-	Members                  map[string]TiDBMember        `json:"members,omitempty"`
+	Phase       MemberPhase             `json:"phase,omitempty"`
+	StatefulSet *apps.StatefulSetStatus `json:"statefulSet,omitempty"`
+	Members     map[string]TiDBMember   `json:"members,omitempty"`
+	// 用于记录故障转移过程中，记录出错误的 TiDB
+	// FailureMembers 的变更会导致 TiDBCluster.TiDBStsDesiredReplicas() 变化，从而导致 StatefulSet 缩扩容
 	FailureMembers           map[string]TiDBFailureMember `json:"failureMembers,omitempty"`
 	ResignDDLOwnerRetryCount int32                        `json:"resignDDLOwnerRetryCount,omitempty"`
 	Image                    string                       `json:"image,omitempty"`
@@ -1071,27 +1076,31 @@ type TiDBFailureMember struct {
 // TiKVStatus is TiKV status
 type TiKVStatus struct {
 	// 本次 Sync Status 收集成功
-	Synced          bool                        `json:"synced,omitempty"`
-	Phase           MemberPhase                 `json:"phase,omitempty"`
-	BootStrapped    bool                        `json:"bootStrapped,omitempty"`
-	StatefulSet     *apps.StatefulSetStatus     `json:"statefulSet,omitempty"`
-	Stores          map[string]TiKVStore        `json:"stores,omitempty"`
-	PeerStores      map[string]TiKVStore        `json:"peerStores,omitempty"`
-	TombstoneStores map[string]TiKVStore        `json:"tombstoneStores,omitempty"`
-	FailureStores   map[string]TiKVFailureStore `json:"failureStores,omitempty"`
-	Image           string                      `json:"image,omitempty"`
+	Synced          bool                    `json:"synced,omitempty"`
+	Phase           MemberPhase             `json:"phase,omitempty"`
+	BootStrapped    bool                    `json:"bootStrapped,omitempty"`
+	StatefulSet     *apps.StatefulSetStatus `json:"statefulSet,omitempty"`
+	Stores          map[string]TiKVStore    `json:"stores,omitempty"`
+	PeerStores      map[string]TiKVStore    `json:"peerStores,omitempty"`
+	TombstoneStores map[string]TiKVStore    `json:"tombstoneStores,omitempty"`
+	// FailureStores 用于记录故障转移过程中，记录出错误的 TiFlash
+	// FailureStores 的变更会导致 TiDBCluster.TiDBStsDesiredReplicas() 变化，从而导致 StatefulSet 缩扩容
+	FailureStores map[string]TiKVFailureStore `json:"failureStores,omitempty"`
+	Image         string                      `json:"image,omitempty"`
 }
 
 // TiFlashStatus is TiFlash status
 type TiFlashStatus struct {
-	Synced          bool                        `json:"synced,omitempty"`
-	Phase           MemberPhase                 `json:"phase,omitempty"`
-	StatefulSet     *apps.StatefulSetStatus     `json:"statefulSet,omitempty"`
-	Stores          map[string]TiKVStore        `json:"stores,omitempty"`
-	PeerStores      map[string]TiKVStore        `json:"peerStores,omitempty"`
-	TombstoneStores map[string]TiKVStore        `json:"tombstoneStores,omitempty"`
-	FailureStores   map[string]TiKVFailureStore `json:"failureStores,omitempty"`
-	Image           string                      `json:"image,omitempty"`
+	Synced          bool                    `json:"synced,omitempty"`
+	Phase           MemberPhase             `json:"phase,omitempty"`
+	StatefulSet     *apps.StatefulSetStatus `json:"statefulSet,omitempty"`
+	Stores          map[string]TiKVStore    `json:"stores,omitempty"`
+	PeerStores      map[string]TiKVStore    `json:"peerStores,omitempty"`
+	TombstoneStores map[string]TiKVStore    `json:"tombstoneStores,omitempty"`
+	// FailureStores 用于记录故障转移过程中，记录出错误的 TiFlash
+	// FailureStores 的变更会导致 TiDBCluster.TiDBStsDesiredReplicas() 变化，从而导致 StatefulSet 缩扩容
+	FailureStores map[string]TiKVFailureStore `json:"failureStores,omitempty"`
+	Image         string                      `json:"image,omitempty"`
 }
 
 // TiCDCStatus is TiCDC status

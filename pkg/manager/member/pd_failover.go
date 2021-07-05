@@ -29,6 +29,7 @@ import (
 	"k8s.io/klog"
 )
 
+// pdFailover 实现了 PD 的 Failover 逻辑
 type pdFailover struct {
 	deps *controller.Dependencies
 }
@@ -58,6 +59,7 @@ func (f *pdFailover) Failover(tc *v1alpha1.TidbCluster) error {
 		tc.Status.PD.FailureMembers = map[string]v1alpha1.PDFailureMember{}
 	}
 
+	// 检查集群是否是可用的，即 健康 PD 数量大于一半
 	inQuorum, healthCount := f.isPDInQuorum(tc)
 	if !inQuorum {
 		return fmt.Errorf("TidbCluster: %s/%s's pd cluster is not healthy, healthy %d / desired %d,"+
@@ -65,22 +67,28 @@ func (f *pdFailover) Failover(tc *v1alpha1.TidbCluster) error {
 			ns, tcName, healthCount, tc.PDStsDesiredReplicas(), tc.Spec.PD.Replicas, len(tc.Status.PD.FailureMembers))
 	}
 
+	// 得到以及被移除 PD 集群的失败的 PD Pod 数量
 	pdDeletedFailureReplicas := tc.GetPDDeletedFailureReplicas()
+
+	// 如果移除的 PD 超过了限制，不进行 Failover
 	if pdDeletedFailureReplicas >= *tc.Spec.PD.MaxFailoverCount {
 		klog.Errorf("PD failover replicas (%d) reaches the limit (%d), skip failover", pdDeletedFailureReplicas, *tc.Spec.PD.MaxFailoverCount)
 		return nil
 	}
 
+	// 需要 delete 的 Pod = PD 失败成员 - 已经删除的
 	notDeletedFailureReplicas := len(tc.Status.PD.FailureMembers) - int(pdDeletedFailureReplicas)
 
 	// we can only failover one at a time
 	if notDeletedFailureReplicas == 0 {
+		// 尝试 delete peer
 		return f.tryToMarkAPeerAsFailure(tc)
 	}
 
 	return f.tryToDeleteAFailureMember(tc)
 }
 
+// Recover 改变 TC Status
 func (f *pdFailover) Recover(tc *v1alpha1.TidbCluster) {
 	tc.Status.PD.FailureMembers = nil
 	klog.Infof("pd failover: clearing pd failoverMembers, %s/%s", tc.GetNamespace(), tc.GetName())
@@ -149,6 +157,7 @@ func (f *pdFailover) tryToDeleteAFailureMember(tc *v1alpha1.TidbCluster) error {
 	var failurePodName string
 	var failurePDName string
 
+	// 得到需要 delete 的 failure member
 	for pdName, pdMember := range tc.Status.PD.FailureMembers {
 		if !pdMember.MemberDeleted {
 			failureMember = &pdMember
@@ -162,6 +171,7 @@ func (f *pdFailover) tryToDeleteAFailureMember(tc *v1alpha1.TidbCluster) error {
 		return nil
 	}
 
+	// 调用 PD 接口 delete
 	memberID, err := strconv.ParseUint(failureMember.MemberID, 10, 64)
 	if err != nil {
 		return err
@@ -174,6 +184,8 @@ func (f *pdFailover) tryToDeleteAFailureMember(tc *v1alpha1.TidbCluster) error {
 	klog.Infof("pd failover[tryToDeleteAFailureMember]: delete member %s/%s(%d) successfully", ns, failurePodName, memberID)
 	f.deps.Recorder.Eventf(tc, apiv1.EventTypeWarning, "PDMemberDeleted", "failure member %s/%s(%d) deleted from PD cluster", ns, failurePodName, memberID)
 
+	// 删除 Pod，会在 Sync 过程中对 StatefulSet 进行扩容
+	// 这里说明的是，因为 Pod 删除会被 StatefulSet，因此需要删除 PVC 来让 StatefulSet 创建新的 Pod 来使用当前 Pod 的 PVC
 	// The order of old PVC deleting and the new Pod creating is not guaranteed by Kubernetes.
 	// If new Pod is created before old PVCs are deleted, the Statefulset will try to use the old PVCs and skip creating new PVCs.
 	// This could result in 2 possible cases:
@@ -196,6 +208,7 @@ func (f *pdFailover) tryToDeleteAFailureMember(tc *v1alpha1.TidbCluster) error {
 		klog.Infof("pd failover[tryToDeleteAFailureMember]: failure pod %s/%s not found, skip", ns, failurePodName)
 	}
 
+	// 删除 PVC
 	ordinal, err := util.GetOrdinalFromPodName(failurePodName)
 	if err != nil {
 		return fmt.Errorf("pd failover[tryToDeleteAFailureMember]: failed to parse ordinal from Pod name for %s/%s, error: %s", ns, failurePodName, err)
@@ -225,6 +238,8 @@ func (f *pdFailover) tryToDeleteAFailureMember(tc *v1alpha1.TidbCluster) error {
 		}
 	}
 
+	// Pod 记录到 status.pd.failureMembers
+	// 标记 status 为 deleted
 	setMemberDeleted(tc, failurePDName)
 	return nil
 }

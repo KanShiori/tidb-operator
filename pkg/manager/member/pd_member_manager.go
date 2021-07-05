@@ -244,8 +244,14 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 	// 自动恢复
 	if m.deps.CLIConfig.AutoFailover {
 		if m.shouldRecover(tc) {
+			// 判断是否需要自动恢复
+			// 条件:
+			//	所有用户期望的 PD 副本都是健康的。这说明故障转移已经完成。
 			m.failover.Recover(tc)
 		} else if tc.PDAllPodsStarted() && !tc.PDAllMembersReady() || tc.PDAutoFailovering() {
+			// 判断是否需要故障转移
+			// 条件:
+			//	所有 Pod 启动并且不是所有 PD 是 Health OR 正在自动缩容过程中
 			if err := m.failover.Failover(tc); err != nil {
 				return err
 			}
@@ -266,9 +272,12 @@ func (m *pdMemberManager) syncPDStatefulSetForTidbCluster(tc *v1alpha1.TidbClust
 
 // shouldRecover checks whether we should perform recovery operation.
 func (m *pdMemberManager) shouldRecover(tc *v1alpha1.TidbCluster) bool {
+	// 没有 failure members
 	if tc.Status.PD.FailureMembers == nil {
 		return false
 	}
+	// 如果期望副本数量的 Pod(不包括 Deleted Failure Pod)，对应 的 PD 存在与集群，且所有 Pod 都为 Health 状态
+
 	// If all desired replicas (excluding failover pods) of tidb cluster are
 	// healthy, we can perform our failover recovery operation.
 	// Note that failover pods may fail (e.g. lack of resources) and we don't care

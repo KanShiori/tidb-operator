@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog"
 )
 
+// tiflashFailover 实现了 TiFlash 的 Failover 逻辑
 // TODO reuse tikvFailover since we share the same logic
 type tiflashFailover struct {
 	deps *controller.Dependencies
@@ -49,11 +50,14 @@ func (f *tiflashFailover) Failover(tc *v1alpha1.TidbCluster) error {
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 遍历所有的 Store，检查其健康状态
 	for storeID, store := range tc.Status.TiFlash.Stores {
 		podName := store.PodName
 		if store.LastTransitionTime.IsZero() {
 			continue
 		}
+
+		// Pod 已经被删除
 		if !f.isPodDesired(tc, podName) {
 			// we should ignore the store record of deleted pod, otherwise the
 			// record of deleted pod may be added back to failure stores
@@ -68,11 +72,16 @@ func (f *tiflashFailover) Failover(tc *v1alpha1.TidbCluster) error {
 				break
 			}
 		}
+
+		// 如果 Store 状态为 Down，并且 LastTransitionTime 超时，并且不存在于 FailureStores
 		if store.State == v1alpha1.TiKVStateDown && time.Now().After(deadline) && !exist {
 			if tc.Status.TiFlash.FailureStores == nil {
 				tc.Status.TiFlash.FailureStores = map[string]v1alpha1.TiKVFailureStore{}
 			}
+
+			// 在 MaxFailoverCount 允许范围内
 			if tc.Spec.TiFlash.MaxFailoverCount != nil && *tc.Spec.TiFlash.MaxFailoverCount > 0 {
+				// 记录到 TiFlash.FailureStores 中
 				maxFailoverCount := *tc.Spec.TiFlash.MaxFailoverCount
 				if len(tc.Status.TiFlash.FailureStores) >= int(maxFailoverCount) {
 					klog.Warningf("%s/%s TiFlash failure stores count reached the limit: %d", ns, tcName, tc.Spec.TiFlash.MaxFailoverCount)

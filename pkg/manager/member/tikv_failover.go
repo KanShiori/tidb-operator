@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog"
 )
 
+// tikvFailover 实现 TiKV 的故障转移逻辑
 type tikvFailover struct {
 	deps *controller.Dependencies
 }
@@ -48,6 +49,7 @@ func (f *tikvFailover) Failover(tc *v1alpha1.TidbCluster) error {
 	ns := tc.GetNamespace()
 	tcName := tc.GetName()
 
+	// 遍历所有的 Store
 	for storeID, store := range tc.Status.TiKV.Stores {
 		podName := store.PodName
 		if store.LastTransitionTime.IsZero() {
@@ -67,6 +69,13 @@ func (f *tikvFailover) Failover(tc *v1alpha1.TidbCluster) error {
 				break
 			}
 		}
+
+		// 如果
+		//	+ Store 为 Down
+		// 	+ LastTransitionTime 已经结束
+		// 	+ 没有被记录过
+		//  + 目前数量还小于 MaxFailoverCount
+		// 那么将其记录到 TiKV.FailureStores
 		if store.State == v1alpha1.TiKVStateDown && time.Now().After(deadline) && !exist {
 			if tc.Status.TiKV.FailureStores == nil {
 				tc.Status.TiKV.FailureStores = map[string]v1alpha1.TiKVFailureStore{}
