@@ -54,3 +54,9 @@ jobs:
         curl -s https://codecov.io/bash | bash -s - -F unittest
       working-directory: ${{ github.workspace }}/go/src/github.com/${{ github.repository }}
       if: ${{ matrix.job == 'test' }}
+
+    - name: Set up tmate session
+      if: ${{ failure() }}
+      uses: mxschmitt/action-tmate@v2
+      with:
+        timeout-minutes: 15
