@@ -24,12 +24,17 @@ source "${ROOT}/hack/lib.sh"
 
 hack::ensure_kind
 
+# 使用 kind 创建 cluster
+# 默认配置
 echo "info: create a Kubernetes cluster"
 $KIND_BIN create cluster
 
+# 本地启动 TiDBOperator
+# 镜像来自于本地编译好的
 echo "info: start tidb-operator"
 hack/local-up-operator.sh
 
+# 执行 tests/examples/ 中的测试脚本(00x-xxx.sh)
 echo "info: testing examples"
 export PATH=$PATH:$OUTPUT_BIN
 hack::ensure_kubectl

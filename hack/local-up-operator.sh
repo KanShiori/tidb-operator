@@ -177,7 +177,9 @@ helm_template_args=(
     --set-string controllerManager.logLevel=4
     --set-string scheduler.logLevel=4
 )
- 
+
+# 调用 helm 启动 TiDBOperator
+# 默认使用 localhost:5000/pingcap/tidb-operator:latest 版本镜像
 $HELM_BIN template tidb-operator-dev ./charts/tidb-operator/ ${helm_template_args[@]} | kubectl -n "$NAMESPACE" apply -f  -
 
 deploys=(

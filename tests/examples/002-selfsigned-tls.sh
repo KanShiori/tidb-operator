@@ -41,6 +41,7 @@ trap cleanup_if_succeess EXIT
 kubectl create ns $NS
 hack::wait_for_success 10 3 "t::ns_is_active $NS"
 
+# 部署 cert-manager，并等待所有 Pod Ready
 kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v${CERT_MANAGER_VERSION}/cert-manager.yaml
 hack::wait_for_success 10 3 "t::crds_are_ready certificaterequests.cert-manager.io certificates.cert-manager.io challenges.acme.cert-manager.io clusterissuers.cert-manager.io issuers.cert-manager.io orders.acme.cert-manager.io"
 for d in cert-manager cert-manager-cainjector cert-manager-webhook; do
@@ -51,18 +52,22 @@ for d in cert-manager cert-manager-cainjector cert-manager-webhook; do
     fi
 done
 
+# 部署组件
 kubectl -n $NS apply -f examples/selfsigned-tls/
 
+# 等待 TiDBCluster Ready
 hack::wait_for_success 300 3 "t::tc_is_ready $NS tls"
 if [ $? -ne 0 ]; then
     echo "fatal: failed to wait for the cluster to be ready"
     exit 1
 fi
 
+# 开始验证 SSL 是否开启
 echo "info: verify mysql client can connect with tidb server with SSL enabled"
 kubectl -n $NS port-forward svc/tls-tidb 4000:4000 &> /tmp/port-forward.log &
 PORT_FORWARD_PID=$!
 
+# 等待端口开启
 host=127.0.0.1
 port=4000
 for ((i=0; i < 10; i++)); do
@@ -75,12 +80,14 @@ for ((i=0; i < 10; i++)); do
 	fi
 done
 
+# 使用 mysql 连接
 hack::wait_for_success 100 3 "mysql -h 127.0.0.1 -P 4000 -uroot -e 'select tidb_version();'"
 if [ $? -ne 0 ]; then
     echo "fatal: failed to connect to TiDB"
     exit 1
 fi
 
+# 查看 SSL 是否打开
 has_ssl=$(mysql -h 127.0.0.1 -P 4000 -uroot -e "SHOW VARIABLES LIKE '%ssl%';" | awk '/have_ssl/ {print $2}')
 if [[ "$has_ssl" != "YES" ]]; then
 	echo "fatal: ssl is not enabled successfully, has_ssl is '$has_ssl'"
