@@ -31,4 +31,6 @@ hack::wait_for_success 10 3 "t::ns_is_active $NS"
 
 kubectl -n $NS apply -f examples/basic/tidb-cluster.yaml
 
+exit 1
+
 hack::wait_for_success 1800 30 "t::tc_is_ready $NS basic"

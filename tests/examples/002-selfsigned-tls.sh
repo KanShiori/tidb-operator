@@ -22,6 +22,8 @@ source "${ROOT}/tests/examples/t.sh"
 NS=$(basename ${0%.*})
 CERT_MANAGER_VERSION=0.14.1
 
+exit 1
+
 PORT_FORWARD_PID=
 
 function cleanup() {
