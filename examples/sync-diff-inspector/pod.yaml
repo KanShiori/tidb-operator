@@ -1,0 +1,44 @@
+# Source: tidb-cluster/templates/monitor-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sync-diff-inspector-config
+data:
+  config: |
+    [data-sources]
+    [data-sources.tidb0]
+        host = "127.0.0.1"
+        port = 4000
+        user = "root"
+        password = ""
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sync-diff-inspector
+spec:
+  containers:
+  - name: sync-diff-inspector
+    image: pingcap/tidb-enterprise-tools
+    imagePullPolicy: IfNotPresent
+    resources: {}
+    # command: ["./sync_diff_inspector",  "--config=/etc/sync-diff-inspector/config.toml"]
+    command: ["sleep", "24h"]
+    volumeMounts:
+    - mountPath: /etc/sync-diff-inspector
+      name: config
+      readOnly: true
+    - mountPath: /output
+      name: output
+  volumes:
+  - name: config
+    configMap:
+      items:
+      - key: config
+        path: config.toml
+      name: sync-diff-inspector-config
+  - name: output
+    persistentVolumeClaim:
+      claimName: ${pvc-name}
+  restartPolicy: Never
+
